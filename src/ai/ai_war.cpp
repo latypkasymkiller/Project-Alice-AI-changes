@@ -1222,7 +1222,7 @@ void update_crisis_leaders(sys::state& state) {
 					}
 				}
 			}
-		} else if(str_est.attacker < str_est.defender && state.world.nation_get_is_player_controlled(state.primary_crisis_defender) == false) {
+		} else if(str_est.defender < str_est.attacker && state.world.nation_get_is_player_controlled(state.primary_crisis_defender) == false) {
 			for(auto& par : state.crisis_participants) {
 				if(!par.id)
 					break;
@@ -1883,9 +1883,9 @@ void add_wargoal_to_war(sys::state& state, dcon::nation_id n, dcon::war_id w) {
 			continue;
 		}
 
-		military::add_wargoal(state, w, n, target, cb, result[0].state_def, result[0].associated_tag, result[0].secondary_nation);
+		military::add_wargoal(state, w, n, target, result[i].cb, result[i].state_def, result[i].associated_tag, result[i].secondary_nation);
 		nations::adjust_relationship(state, n, target, state.defines.addwargoal_relation_on_accept);
-		state.world.nation_set_infamy(n, state.world.nation_get_infamy(n) + military::cb_infamy(state, cb, target) * multiplier);
+		state.world.nation_set_infamy(n, state.world.nation_get_infamy(n) + military::cb_infamy(state, result[i].cb, target, result[i].state_def) * multiplier);
 		return;
 	}
 }
