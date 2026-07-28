@@ -957,8 +957,10 @@ enum class province_class : uint8_t {
 	low_priority_border = 2,
 	border = 3,
 	threat_border = 4,
-	hostile_border = 5,
-	count = 6
+	hostile_rear_2 = 5,
+	hostile_rear_1 = 6,
+	hostile_border = 7,
+	count = 8
 };
 
 struct classified_province {
@@ -972,6 +974,7 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 
 	auto cap = state.world.nation_get_capital(n);
 
+	// 1. Primary province classification
 	for(auto c : state.world.nation_get_province_control(n)) {
 		province_class cls = c.get_province().get_is_coast() ? province_class::coast : province_class::interior;
 		if(c.get_province() == cap)
@@ -993,23 +996,17 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 				cls = province_class::hostile_border;
 				break;
 			} else if(nations::are_allied(state, n, n_controller) || (ovr && ovr == n) || (ovr && nations::are_allied(state, n, ovr))) {
-				// allied controller or subject of allied controller or our "parent" overlord
 				if(uint8_t(cls) < uint8_t(province_class::low_priority_border)) {
 					cls = province_class::low_priority_border;
 				}
 			} else {
-				/* We will target POTENTIAL enemies of the nation;
-				   we could also check if the CB can be used on us, but
-				   that is expensive, so instead we use available_cbs! */
 				bool is_threat = false;
 				if(n_controller) {
 					is_threat |= n_controller.get_ai_rival() == n;
 					is_threat |= state.world.nation_get_ai_rival(n) == n_controller.id;
 					if(ovr) {
-						/* subjects cannot negotiate by themselves, but the overlord may */
 						is_threat |= ovr.get_ai_rival() == n;
 						is_threat |= state.world.nation_get_ai_rival(n) == ovr.id;
-						//
 						is_threat |= ovr.get_constructing_cb_target() == n;
 						for(auto cb : ovr.get_available_cbs())
 							is_threat |= cb.target == n;
@@ -1023,7 +1020,7 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 					if(uint8_t(cls) < uint8_t(province_class::threat_border)) {
 						cls = province_class::threat_border;
 					}
-				} else { // other border
+				} else {
 					if(uint8_t(cls) < uint8_t(province_class::border)) {
 						cls = province_class::border;
 					}
@@ -1032,6 +1029,52 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 		}
 		provinces.push_back(classified_province{ c.get_province().id, cls });
 	}
+
+	// 2. Secondary defensive line (hostile_rear_1: friendly provinces adjacent to the hostile border)
+	for(auto& cp : provinces) {
+		if(cp.c != province_class::hostile_border) {
+			auto fat_p = dcon::fatten(state.world, cp.id);
+			for(auto padj : fat_p.get_province_adjacency()) {
+				auto other = padj.get_connected_provinces(0) == fat_p ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
+				auto it = std::find_if(provinces.begin(), provinces.end(), [&](classified_province const& item) {
+					return item.id == other.id && item.c == province_class::hostile_border;
+				});
+				if(it != provinces.end()) {
+					cp.c = province_class::hostile_rear_1;
+					break;
+				}
+			}
+		}
+	}
+
+	// 3. Tertiary defensive line (hostile_rear_2: friendly provinces adjacent to the secondary line)
+	for(auto& cp : provinces) {
+		if(cp.c != province_class::hostile_border && cp.c != province_class::hostile_rear_1) {
+			auto fat_p = dcon::fatten(state.world, cp.id);
+			for(auto padj : fat_p.get_province_adjacency()) {
+				auto other = padj.get_connected_provinces(0) == fat_p ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
+				auto it = std::find_if(provinces.begin(), provinces.end(), [&](classified_province const& item) {
+					return item.id == other.id && item.c == province_class::hostile_rear_1;
+				});
+				if(it != provinces.end()) {
+					cp.c = province_class::hostile_rear_2;
+					break;
+				}
+			}
+		}
+	}
+
+	std::sort(provinces.begin(), provinces.end(), [&](classified_province& a, classified_province& b) {
+		if(a.c != b.c) {
+			return uint8_t(a.c) > uint8_t(b.c);
+		}
+		auto adist = province::sorting_distance(state, a.id, cap);
+		auto bdist = province::sorting_distance(state, b.id, cap);
+		if(adist != bdist) {
+			return adist < bdist;
+		}
+		return a.id.index() < b.id.index();
+	});
 
 	std::sort(provinces.begin(), provinces.end(), [&](classified_province& a, classified_province& b) {
 		if(a.c != b.c) {
@@ -1151,6 +1194,45 @@ dcon::navy_id find_transport_fleet(sys::state& state, dcon::nation_id controller
 }
 
 void move_idle_guards(sys::state& state) {
+	// 1. Evacuate exiled (black-flagged) idle armies from foreign land to owned home territory
+	for(auto ar : state.world.in_army) {
+		if(ar.get_black_flag()
+			&& ar.get_controller_from_army_control()
+			&& unit_on_ai_control(state, ar)
+			&& !ar.get_arrival_time()
+			&& !ar.get_battle_from_army_battle_participation()
+			&& !ar.get_navy_from_army_transport()) {
+
+			auto controller = ar.get_controller_from_army_control();
+			auto army_loc = ar.get_location_from_army_location();
+
+			// If the army is currently exiled in foreign land
+			if(army_loc.get_nation_from_province_ownership() != controller) {
+				dcon::province_id home_target;
+				float min_dist = 100000.0f;
+
+				// Find the nearest owned province to march towards
+				for(auto p : controller.get_province_ownership()) {
+					auto dist = province::sorting_distance(state, army_loc.id, p.get_province().id);
+					if(!home_target || dist < min_dist) {
+						min_dist = dist;
+						home_target = p.get_province().id;
+					}
+				}
+
+				if(home_target) {
+					auto path = province::make_land_unit_path(state, army_loc.id, home_target, controller, ar);
+					if(!path.empty()) {
+						military::set_army_path(state, ar, path, controller);
+						ar.set_ai_activity(uint8_t(army_activity::on_guard));
+						ar.set_ai_province(home_target);
+						continue;
+					}
+				}
+			}
+		}
+	}
+
 	std::vector<dcon::army_id> require_transport;
 	require_transport.reserve(state.world.army_size());
 
@@ -1164,7 +1246,7 @@ void move_idle_guards(sys::state& state) {
 			&& !ar.get_battle_from_army_battle_participation()
 			&& !ar.get_navy_from_army_transport()) {
 
-			auto valid_path = military::move_army_ai(state, ar.id, ar.get_ai_province(), ar.get_controller_from_army_control() );
+			auto valid_path = military::move_army_ai(state, ar.id, ar.get_ai_province(), ar.get_controller_from_army_control());
 
 			if(!valid_path) {
 				//Units delegated to the AI won't transport themselves on their own
@@ -1236,13 +1318,12 @@ void move_idle_guards(sys::state& state) {
 						continue;
 
 					if(state.world.army_get_location_from_army_location(require_transport[j]) == coastal_target_prov) {
-						state.world.army_set_ai_activity(require_transport[i], uint8_t(army_activity::transport_guard));
+						state.world.army_set_ai_activity(require_transport[j], uint8_t(army_activity::transport_guard));
 						tcap -= int32_t(jregs.end() - jregs.begin());
 					} else {
 						auto valid_path = military::move_army_ai(state, require_transport[j], coastal_target_prov, controller);
-						auto jpath = province::make_land_unit_path(state, state.world.army_get_location_from_army_location(require_transport[j]), coastal_target_prov, controller, require_transport[j]);
 						if(valid_path) {
-							state.world.army_set_ai_activity(require_transport[i], uint8_t(army_activity::transport_guard));
+							state.world.army_set_ai_activity(require_transport[j], uint8_t(army_activity::transport_guard));
 							tcap -= int32_t(jregs.end() - jregs.begin());
 						}
 					}
@@ -1328,13 +1409,44 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 		if(location == p)
 			continue;
 
+		// Do not leave the frontline open if there are unengaged enemy forces right in front of us
+		bool has_unengaged_enemy_in_front = false;
+		for(auto padj : location.get_province_adjacency()) {
+			auto other = padj.get_connected_provinces(0) == location ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
+
+			// Ignore the combat province we are actively trying to reinforce
+			if(other.id == p)
+				continue;
+
+			for(auto enemy_ar : state.world.province_get_army_location(other.id)) {
+				auto e_army = enemy_ar.get_army();
+				auto e_controller = e_army.get_controller_from_army_control();
+
+				// If there's a hostile army in front of us which is NOT in battle, NOT retreating, and NOT exiled -> it's an active threat
+				if(military::are_enemies(state, n, e_controller)
+					&& !e_army.get_battle_from_army_battle_participation()
+					&& !e_army.get_is_retreating()
+					&& !e_army.get_black_flag()) {
+
+					has_unengaged_enemy_in_front = true;
+					break;
+				}
+			}
+
+			if(has_unengaged_enemy_in_front)
+				break;
+		}
+
+		if(has_unengaged_enemy_in_front)
+			continue; // Hold frontline to prevent hostile breakthroughs
+
 		auto sdist = province::sorting_distance(state, location, p);
 		if(sdist > state.defines.alice_ai_gather_radius)
 			continue;
+
 		// move back and fourth between the battle and original location
 		military::move_army_ai(state, ar.get_army().id, p, n);
 		military::move_army_ai(state, ar.get_army().id, ar.get_army().get_location_from_army_location(), n, false);
-
 	}
 }
 
@@ -1761,6 +1873,8 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		}
 	}
 
+	bool has_any_frontline_target = false;
+
 	for(auto& pt : potential_targets) {
 		for(uint32_t i = uint32_t(ready_armies.size()); i-- > 1;) {
 			auto sdist = province::sorting_distance(state, ready_armies[i].p, pt.location);
@@ -1768,7 +1882,38 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 				pt.minimal_distance = sdist;
 			}
 		}
+
+		// Frontline defense: heavily penalize non-frontline hostile provinces to avoid detours ("pawn-eating")
+		auto fat_prov = dcon::fatten(state.world, pt.location);
+		auto ctrl = fat_prov.get_nation_from_province_control();
+
+		if(ctrl && ctrl != n && !military::are_allied_in_war(state, n, ctrl)) {
+			bool borders_friendly = false;
+			for(auto padj : fat_prov.get_province_adjacency()) {
+				auto other = padj.get_connected_provinces(0) == fat_prov ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
+				auto other_ctrl = other.get_nation_from_province_control();
+
+				auto other_ovr = other_ctrl.get_overlord_as_subject().get_ruler();
+				if(other_ctrl && (other_ctrl == n
+					|| military::are_allied_in_war(state, n, other_ctrl)
+					|| state.world.nation_get_in_sphere_of(other_ctrl) == n
+					|| (other_ovr && other_ovr == n))) {
+					borders_friendly = true;
+					break;
+				}
+			}
+			// Apply a massive penalty distance score to provinces deep in the enemy's rear
+			if(!borders_friendly) {
+				pt.minimal_distance += 100000.0f;
+			} else {
+				has_any_frontline_target = true;
+			}
+		} else {
+			// Liberating owned/allied territory is always considered a frontline target
+			has_any_frontline_target = true;
+		}
 	}
+
 	std::sort(potential_targets.begin(), potential_targets.end(), [&](army_target& a, army_target& b) {
 		if(a.minimal_distance != b.minimal_distance)
 			return a.minimal_distance < b.minimal_distance;
@@ -1785,15 +1930,20 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 	for(uint32_t i = 0; i < psize && max_attacks_to_make > 0; ++i) {
 		if(!potential_targets[i].location)
 			continue; // target has been removed as too close by some earlier iteration
+
+		// If frontline objectives exist, strictly forbid attacks deep in the rear
+		if(has_any_frontline_target && potential_targets[i].minimal_distance > 50000.0f)
+			break;
+
 		if(potential_targets[i].strength_estimate == 0.0f)
 			potential_targets[i].strength_estimate = estimate_enemy_defensive_force(state, potential_targets[i].location, n) + 0.00001f;
 
 		auto target_attack_force = potential_targets[i].strength_estimate;
 		std::sort(ready_armies.begin(), ready_armies.end(), [&](a_str const& a, a_str const& b) {
-			auto adist = province::sorting_distance(state, a.p, potential_targets[i].location);
-			auto bdist = province::sorting_distance(state, b.p, potential_targets[i].location);
-			if(adist != bdist)
-				return adist > bdist;
+			auto d_a = province::sorting_distance(state, a.p, potential_targets[i].location);
+			auto d_b = province::sorting_distance(state, b.p, potential_targets[i].location);
+			if(d_a != d_b)
+				return d_a > d_b;
 			else
 				return a.p.index() < b.p.index();
 		});
@@ -1803,51 +1953,58 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		int32_t k = int32_t(ready_armies.size());
 		for(; k-- > 0 && a_force_str <= target_attack_force;) {
 			if(ready_armies[k].str == 0.0f) {
-			for(auto ar : state.world.province_get_army_location(ready_armies[k].p)) {
-				if(ar.get_army().get_battle_from_army_battle_participation()
-					|| n != ar.get_army().get_controller_from_army_control()
-					|| ar.get_army().get_navy_from_army_transport()
-					|| ar.get_army().get_black_flag()
-					|| ar.get_army().get_arrival_time()
-					|| army_activity(ar.get_army().get_ai_activity()) != army_activity::on_guard
-					|| !army_ready_for_battle(state, n, ar.get_army())) {
+				for(auto ar : state.world.province_get_army_location(ready_armies[k].p)) {
+					if(ar.get_army().get_battle_from_army_battle_participation()
+						|| n != ar.get_army().get_controller_from_army_control()
+						|| ar.get_army().get_navy_from_army_transport()
+						|| ar.get_army().get_black_flag()
+						|| ar.get_army().get_arrival_time()
+						|| army_activity(ar.get_army().get_ai_activity()) != army_activity::on_guard
+						|| !army_ready_for_battle(state, n, ar.get_army())) {
 
-					continue;
+						continue;
+					}
+
+					// Do not strip the frontline on other sectors if there is an active threat in front of us
+					auto loc_fat = ar.get_army().get_location_from_army_location();
+					bool has_enemy_in_front = false;
+					for(auto padj : loc_fat.get_province_adjacency()) {
+						auto other = padj.get_connected_provinces(0) == loc_fat ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
+						if(other.id != potential_targets[i].location && military::province_has_enemy_army(state, other.id, n)) {
+							has_enemy_in_front = true;
+							break;
+						}
+					}
+
+					if(has_enemy_in_front)
+						continue; // Hold frontline sector instead of marching away on other attacks
+
+					ready_armies[k].str += estimate_army_offensive_strength(state, ar.get_army());
 				}
-
-				ready_armies[k].str += estimate_army_offensive_strength(state, ar.get_army());
-			}
-			ready_armies[k].str += 0.00001f;
+				ready_armies[k].str += 0.00001f;
 			}
 			a_force_str += ready_armies[k].str;
 		}
 
 		if(a_force_str < target_attack_force) {
-			return; // end assigning attackers completely
+			continue; // Target is too strong for remaining available forces, skip and check others
 		}
 
-		// find central province
+		// Find closest safe frontline assembly province
 		dcon::province_id central_province;
-
-		glm::vec3 accumulated{ 0.0f, 0.0f, 0.0f };
-		float minimal_distance = 2.0f;
-
-		for(int32_t m = int32_t(ready_armies.size()); m-- > k + 1; ) {
-			accumulated += state.world.province_get_mid_point_b(ready_armies[m].p);
-		}
-		auto magnitude = math::sqrt((accumulated.x * accumulated.x + accumulated.y * accumulated.y) + accumulated.z * accumulated.z);
-		if(magnitude > 0.00001f)
-			accumulated /= magnitude;
+		float minimal_distance = 100000.0f;
 
 		province::for_each_land_province(state, [&](dcon::province_id p) {
 			if(!province::has_safe_access_to_province(state, n, p))
 				return;
-			auto pmid = state.world.province_get_mid_point_b(p);
-			if(auto dist = -((accumulated.x * pmid.x + accumulated.y * pmid.y) + accumulated.z * pmid.z); dist < minimal_distance) {
+
+			auto dist = province::sorting_distance(state, p, potential_targets[i].location);
+			if(!central_province || dist < minimal_distance) {
 				minimal_distance = dist;
 				central_province = p;
 			}
 		});
+
 		if(!central_province)
 			continue;
 
@@ -1864,6 +2021,21 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 					|| !army_ready_for_battle(state, n, ar.get_army())) {
 
 					continue;
+				}
+
+				// DOUBLE-CHECK: Do not strip frontline on command issuance if threat was detected
+				auto loc_fat = ar.get_army().get_location_from_army_location();
+				bool has_enemy_in_front = false;
+				for(auto padj : loc_fat.get_province_adjacency()) {
+					auto other = padj.get_connected_provinces(0) == loc_fat ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
+					if(other.id != potential_targets[i].location && military::province_has_enemy_army(state, other.id, n)) {
+						has_enemy_in_front = true;
+						break;
+					}
+				}
+
+				if(has_enemy_in_front) {
+					continue; // Hold frontline sector
 				}
 
 				if(ready_armies[m].p == central_province) {
@@ -1978,33 +2150,57 @@ void move_gathered_attackers(sys::state& state) {
 
 			if(all_gathered) {
 				if(province::has_access_to_province(state, ar.get_controller_from_army_control(), ar.get_ai_province())) {
-					if(ar.get_ai_province() == ar.get_location_from_army_location()) {
-						for(auto o : ar.get_location_from_army_location().get_army_location()) {
-							if(o.get_army().get_ai_province() == ar.get_ai_province()
+					auto army_loc = ar.get_location_from_army_location();
+					auto target_prov = ar.get_ai_province();
+
+					if(target_prov == army_loc) {
+						for(auto o : army_loc.get_army_location()) {
+							if(o.get_army().get_ai_province() == target_prov
 								&& o.get_army().get_path().size() == 0) {
-
-								o.get_army().set_ai_activity(uint8_t(army_activity::attack_gathered));
-							}
-						}
-					} else if(auto path = province::make_land_unit_path(state, ar.get_location_from_army_location(), ar.get_ai_province(), ar.get_controller_from_army_control(), ar); path.size() > 0) {
-
-						for(auto o : ar.get_location_from_army_location().get_army_location()) {
-							if(o.get_army().get_ai_province() == ar.get_ai_province()
-								&& o.get_army().get_path().size() == 0) {
-
-								military::set_army_path(state, o.get_army(), path, o.get_army().get_controller_from_army_control());
 
 								o.get_army().set_ai_activity(uint8_t(army_activity::attack_gathered));
 							}
 						}
 					} else {
-						for(auto o : ar.get_location_from_army_location().get_army_location()) {
-							if(o.get_army().get_ai_province() == ar.get_ai_province()
-								&& o.get_army().get_path().size() == 0) {
-
-								require_transport.push_back(o.get_army().id);
-								ar.set_ai_activity(uint8_t(army_activity::attack_transport));
+						// Land march is only allowed directly to adjacent provinces or via safe paths (owned/occupied)
+						bool is_adjacent = province::provinces_are_adjacent(state, army_loc.id, target_prov);
+						bool is_safe_path = false;
+						if(!is_adjacent) {
+							auto safe_path = province::make_safe_land_path(state, army_loc.id, target_prov, ar.get_controller_from_army_control());
+							if(!safe_path.empty()) {
+								is_safe_path = true;
 							}
+						}
+
+						// Land march is permitted ONLY to adjacent sectors or via safe territory
+						if(is_adjacent || is_safe_path) {
+							if(auto path = province::make_land_unit_path(state, army_loc.id, target_prov, ar.get_controller_from_army_control(), ar); path.size() > 0) {
+								for(auto o : army_loc.get_army_location()) {
+									if(o.get_army().get_ai_province() == target_prov
+										&& o.get_army().get_path().size() == 0) {
+
+										military::set_army_path(state, o.get_army(), path, o.get_army().get_controller_from_army_control());
+										o.get_army().set_ai_activity(uint8_t(army_activity::attack_gathered));
+									}
+								}
+							} else {
+								ar.set_ai_activity(uint8_t(army_activity::on_guard));
+								ar.set_ai_province(dcon::province_id{});
+							}
+						} else if(state.world.province_get_is_coast(target_prov)) {
+							// Non-adjacent coastal targets MUST trigger naval transport instead of walking across continents
+							for(auto o : army_loc.get_army_location()) {
+								if(o.get_army().get_ai_province() == target_prov
+									&& o.get_army().get_path().size() == 0) {
+
+									require_transport.push_back(o.get_army().id);
+									ar.set_ai_activity(uint8_t(army_activity::attack_transport));
+								}
+							}
+						} else {
+							// Distant continental targets with no direct safe access -> cancel march to avoid attrition deaths
+							ar.set_ai_activity(uint8_t(army_activity::on_guard));
+							ar.set_ai_province(dcon::province_id{});
 						}
 					}
 				} else {
