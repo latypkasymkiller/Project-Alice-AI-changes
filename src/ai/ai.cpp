@@ -1076,18 +1076,6 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 		return a.id.index() < b.id.index();
 	});
 
-	std::sort(provinces.begin(), provinces.end(), [&](classified_province& a, classified_province& b) {
-		if(a.c != b.c) {
-			return uint8_t(a.c) > uint8_t(b.c);
-		}
-		auto adist = province::sorting_distance(state, a.id, cap);
-		auto bdist = province::sorting_distance(state, b.id, cap);
-		if(adist != bdist) {
-			return adist < bdist;
-		}
-		return a.id.index() < b.id.index();
-	});
-
 	// form list of guards
 	std::vector<dcon::army_id> guards_list;
 	guards_list.reserve(state.world.army_size());
@@ -1896,8 +1884,8 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 				auto other_ovr = other_ctrl.get_overlord_as_subject().get_ruler();
 				if(other_ctrl && (other_ctrl == n
 					|| military::are_allied_in_war(state, n, other_ctrl)
-					|| state.world.nation_get_in_sphere_of(other_ctrl) == n
-					|| (other_ovr && other_ovr == n))) {
+					|| (state.world.nation_get_in_sphere_of(other_ctrl) == n && !military::are_at_war(state, n, other_ctrl))
+					|| (other_ovr && other_ovr == n && !military::are_at_war(state, n, other_ctrl)))) {
 					borders_friendly = true;
 					break;
 				}
