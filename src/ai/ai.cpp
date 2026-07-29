@@ -957,10 +957,11 @@ enum class province_class : uint8_t {
 	low_priority_border = 2,
 	border = 3,
 	threat_border = 4,
-	hostile_rear_2 = 5,
-	hostile_rear_1 = 6,
-	hostile_border = 7,
-	count = 8
+	allied_hostile_border = 5,
+	hostile_rear_2 = 6,
+	hostile_rear_1 = 7,
+	hostile_border = 8,
+	count = 9
 };
 
 struct classified_province {
@@ -1028,6 +1029,40 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 			}
 		}
 		provinces.push_back(classified_province{ c.get_province().id, cls });
+	}
+
+	// 1.5 Allied frontline (Allied provinces adjacent to the enemy)
+	for(auto par : state.world.nation_get_war_participant(n)) {
+		for(auto other : par.get_war().get_war_participant()) {
+			if(other.get_is_attacker() == par.get_is_attacker() && other.get_nation() != n) {
+				auto ally = other.get_nation();
+				for(auto c : state.world.nation_get_province_control(ally)) {
+					bool is_hostile = false;
+					for(auto padj : c.get_province().get_province_adjacency()) {
+						auto other_prov = padj.get_connected_provinces(0) == c.get_province() ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
+						auto n_controller = other_prov.get_nation_from_province_control();
+
+						if(other_prov.get_rebel_faction_from_province_rebel_control()) {
+							is_hostile = true;
+							break;
+						} else if(n_controller && military::are_at_war(state, n, n_controller)) {
+							is_hostile = true;
+							break;
+						}
+					}
+
+					if(is_hostile) {
+						auto prov_id = c.get_province().id;
+						auto it = std::find_if(provinces.begin(), provinces.end(), [&](classified_province const& item) {
+							return item.id == prov_id;
+						});
+						if(it == provinces.end()) {
+							provinces.push_back(classified_province{ prov_id, province_class::allied_hostile_border });
+						}
+					}
+				}
+			}
+		}
 	}
 
 	// 2. Secondary defensive line (hostile_rear_1: friendly provinces adjacent to the hostile border)
@@ -1106,7 +1141,7 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 				assert(p_region > 0);
 				bool p_region_is_coastal = state.province_definitions.connected_region_is_coastal[p_region - 1];
 
-				if(10.0f * (1 + full_loops_through) <= military::peacetime_attrition_limit(state, n, p)) {
+				if(military::local_army_weight(state, p) + 10.0f * (1 + full_loops_through) <= military::peacetime_attrition_limit(state, n, p)) {
 					uint32_t nearest_index = 0;
 					dcon::army_id nearest;
 					float nearest_distance = 1.0f;
@@ -1234,7 +1269,8 @@ void move_idle_guards(sys::state& state) {
 			&& !ar.get_battle_from_army_battle_participation()
 			&& !ar.get_navy_from_army_transport()) {
 
-			auto valid_path = military::move_army_ai(state, ar.id, ar.get_ai_province(), ar.get_controller_from_army_control());
+			auto path = province::make_safe_land_path(state, ar.get_location_from_army_location().id, ar.get_ai_province(), ar.get_controller_from_army_control());
+			bool valid_path = !path.empty() && military::set_army_path(state, ar.id, path, ar.get_controller_from_army_control());
 
 			if(!valid_path) {
 				//Units delegated to the AI won't transport themselves on their own
