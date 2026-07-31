@@ -15,6 +15,7 @@
 #include "demographics.hpp"
 #include "rebels.hpp"
 #include "ai.hpp"
+#include "ai_pressure.hpp"
 #include "ai_alliances.hpp"
 #include "ai_focuses.hpp"
 #include "ai_economy.hpp"
@@ -4092,6 +4093,18 @@ void state::on_scenario_load() {
 }
 
 void state::fill_unsaved_data() { // reconstructs derived values that are not directly saved after a save has been loaded
+	/*
+	The AI threat fields are keyed on the current date, and date::value is a uint16_t that
+	repeats across every save of a scenario. Without an explicit clear here, quitting to the
+	menu and loading a save at the same date leaves the cache believing it is already current
+	and serving the previous session's fields, debits and all. It is worse than stale data in
+	multiplayer: a host that has been running and a client that just loaded arrive at the same
+	tick holding different fields and make different gathering decisions, which is an
+	immediate out-of-sync. The nation and province counts guarding the cache are identical
+	across saves of one scenario, so they cannot catch this.
+	*/
+	ai::clear_pressure_cache();
+
 	// reset ui gamerule settings to match the actual setting of the save
 	gamerule::restore_gamerule_ui_settings(*this);
 	great_nations.reserve(int32_t(defines.great_nations_count));
@@ -4620,6 +4633,15 @@ void state::single_game_tick() {
 			ai::make_defense(*this);
 			ai::make_attacks(*this);
 			ai::update_ships(*this);
+		} else if(bool(defines.alice_ai_use_pressure)
+			&& defines.alice_ai_wartime_defense_interval >= 1.0f
+			&& (current_date.value % uint32_t(std::clamp(defines.alice_ai_wartime_defense_interval, 1.0f, 365.0f))) == 0) {
+
+			// Defensive redistribution is otherwise spread across the month, which leaves a
+			// nation up to a fortnight behind a front that can be redrawn in days. Only the
+			// belligerents are recomputed here; everyone else keeps its monthly slot, so
+			// peacetime cost and peacetime behaviour are both unchanged.
+			ai::make_defense(*this, true);
 		}
 
 		ai::take_ai_decisions(*this);

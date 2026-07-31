@@ -670,6 +670,33 @@
 	LUA_DEFINES_LIST_ELEMENT(alice_ai_threat_radius, -0.996000)                                                                    \
 	LUA_DEFINES_LIST_ELEMENT(alice_ai_threat_overestimate, 1.150000)                                                               \
 	LUA_DEFINES_LIST_ELEMENT(alice_ai_attack_target_radius, -0.996000)                                                             \
+/* AI threat pressure field ("internal map"): armies project a weight that decays with distance, so the AI      */ \
+/* reacts to the mass of a threat rather than to its mere presence. 0 disables and restores the legacy behavior */ \
+	LUA_DEFINES_LIST_ELEMENT(alice_ai_use_pressure, 1.000000)                                                                      \
+/* Fraction of an army's weight that carries over per province step. 0.5 => a 100k stack reads as 12.5k three provinces away */ \
+	LUA_DEFINES_LIST_ELEMENT(alice_ai_pressure_falloff, 0.500000)                                                                  \
+/* Hard cap on propagation depth, in province steps */                                                                            \
+	LUA_DEFINES_LIST_ELEMENT(alice_ai_pressure_max_hops, 8.000000)                                                                 \
+/* Contributions below this (in thousands of men) stop propagating */                                                             \
+	LUA_DEFINES_LIST_ELEMENT(alice_ai_pressure_min_contribution, 1.000000)                                                         \
+/* Weight multiplier for armies already locked in a battle, strategic horizon only */                                             \
+	LUA_DEFINES_LIST_ELEMENT(alice_ai_pressure_in_battle_weight, 0.500000)                                                         \
+/* Weight multiplier applied at a marching army's destination, so the AI reacts to a redeployment in progress */                   \
+	LUA_DEFINES_LIST_ELEMENT(alice_ai_pressure_destination_weight, 0.500000)                                                       \
+/* Friendly weight a sector must retain, relative to hostile pressure, for a garrison to be free to leave */                       \
+	LUA_DEFINES_LIST_ELEMENT(alice_ai_hold_ratio, 0.750000)                                                                        \
+/* An army this many times heavier than the pressure facing it ignores the hold rule (anti-pinning by token forces) */             \
+	LUA_DEFINES_LIST_ELEMENT(alice_ai_overwhelm_ratio, 10.000000)                                                                  \
+/* Safety margin over estimated enemy strength when deciding how much to commit to one battle */                                   \
+	LUA_DEFINES_LIST_ELEMENT(alice_ai_reinforce_sufficiency, 1.500000)                                                             \
+/* Days between defensive redistributions while at war (peacetime keeps the twice-a-month cadence) */                              \
+	LUA_DEFINES_LIST_ELEMENT(alice_ai_wartime_defense_interval, 4.000000)                                                          \
+/* Hostile pressure, in thousands of men, at or below which a threat is a token and cannot pin a garrison */        \
+	LUA_DEFINES_LIST_ELEMENT(alice_ai_token_pressure, 3.000000)                                                                    \
+/* Most armies committed to one battle per evaluation; each costs two pathfinder runs, so this bounds the cost */   \
+	LUA_DEFINES_LIST_ELEMENT(alice_ai_gather_max_commits, 4.000000)                                                                \
+/* Share of an embarked army's weight projected onto each land province next to its transport's sea zone */         \
+	LUA_DEFINES_LIST_ELEMENT(alice_ai_pressure_amphibious_weight, 0.500000)                                                        \
 	LUA_DEFINES_LIST_ELEMENT(alice_full_reinforce, 1.000000)                                                             \
 	LUA_DEFINES_LIST_ELEMENT(alice_auto_hire_generals, 1.00000)                                                                   \
 	LUA_DEFINES_LIST_ELEMENT(alice_ai_offensive_strength_overestimate, 1.000000) \

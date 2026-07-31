@@ -5,6 +5,7 @@
 #include "effects.hpp"
 #include "events.hpp"
 #include "ai.hpp"
+#include "ai_pressure.hpp"
 #include "ai_war.hpp"
 #include "demographics.hpp"
 #include "politics.hpp"
@@ -5231,9 +5232,38 @@ void army_arrives_in_province(sys::state& state, dcon::army_id a, dcon::province
 			}
 
 			if(battle_in_war) { // gather as part of war
-				for(auto par : state.world.war_get_war_participant(battle_in_war)) {
-					if(par.get_nation().get_is_player_controlled() == false)
-						ai::gather_to_battle(state, par.get_nation(), p);
+				/*
+				With the pressure model on, only the nations with an army in this battle are
+				asked here. Fanning out to every participant in the war meant that in a great
+				war each of thirty nations was asked about every battle and each independently
+				measured the same shortfall. The co-belligerents that are merely nearby are
+				reached by ai::reinforce_live_battles, which sweeps every belligerent of the
+				war daily.
+
+				That sweep is gated on the pressure model, so this narrowing has to be too:
+				with the model off nothing else would ever revisit a live battle, and turning
+				the kill switch to zero would leave the AI worse off than it was before any of
+				this existed rather than exactly where it was.
+				*/
+				if(ai::pressure_enabled(state)) {
+					std::vector<dcon::nation_id> engaged;
+					for(auto par : state.world.land_battle_get_army_battle_participation(gather_to_battle)) {
+						auto controller = par.get_army().get_controller_from_army_control();
+						if(!controller || state.world.nation_get_is_player_controlled(controller))
+							continue;
+						if(std::find(engaged.begin(), engaged.end(), controller) != engaged.end())
+							continue;
+
+						engaged.push_back(controller);
+					}
+
+					for(auto controller : engaged)
+						ai::gather_to_battle(state, controller, p);
+				} else {
+					for(auto par : state.world.war_get_war_participant(battle_in_war)) {
+						if(par.get_nation().get_is_player_controlled() == false)
+							ai::gather_to_battle(state, par.get_nation(), p);
+					}
 				}
 			} else if(state.world.nation_get_is_player_controlled(owner_nation) == false) { // gather vs. rebels
 				ai::gather_to_battle(state, owner_nation, p);

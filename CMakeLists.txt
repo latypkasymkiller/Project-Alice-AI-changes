@@ -77,6 +77,7 @@ list(APPEND ALICE_INCREMENTAL_SOURCES_LIST_AI
 	"${PROJECT_SOURCE_DIR}/src/ai/ai_influence.cpp"
 	"${PROJECT_SOURCE_DIR}/src/ai/ai_alliances.cpp"
 	"${PROJECT_SOURCE_DIR}/src/ai/ai_economy.cpp"
+	"${PROJECT_SOURCE_DIR}/src/ai/ai_pressure.cpp"
 	"${PROJECT_SOURCE_DIR}/src/ai/ai_war.cpp"
 )
 set_source_files_properties(

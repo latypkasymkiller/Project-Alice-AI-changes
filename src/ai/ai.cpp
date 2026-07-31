@@ -1,4 +1,5 @@
 #include "ai.hpp"
+#include "ai_pressure.hpp"
 #include "ai_types.hpp"
 #include "ai_campaign_values.hpp"
 #include "system_state.hpp"
@@ -639,8 +640,232 @@ void refresh_home_ports(sys::state& state) {
 	}
 }
 
-void daily_cleanup(sys::state& state) {
+/*
+Orders outlive the situation that justified them, and nothing else reconsiders an army once
+it is moving: every other pass skips armies that have an arrival time. Four ways an AI army
+gets stuck, all repaired in one sweep.
 
+Everything here is derived from synchronized gamestate rather than remembered. A side table
+of "which battle was this army sent to" would not survive a save, a load, or a player joining
+mid-game, and the host would then cancel an order that the joiner kept.
+*/
+void validate_ai_orders(sys::state& state) {
+	float const sufficiency = std::max(1.0f, state.defines.alice_ai_reinforce_sufficiency);
+
+	for(auto ar : state.world.in_army) {
+		if(ar.get_battle_from_army_battle_participation() || ar.get_navy_from_army_transport())
+			continue;
+
+		auto controller = ar.get_controller_from_army_control();
+		if(!controller || !unit_on_ai_control(state, ar))
+			continue;
+
+		auto const activity = army_activity(ar.get_ai_activity());
+		auto const location = ar.get_location_from_army_location().id;
+
+		if(ar.get_arrival_time() && !ar.get_black_flag() && !ar.get_is_retreating()) {
+			auto path = ar.get_path();
+
+			/*
+			A garrison sent to reinforce a battle keeps marching long after that battle has
+			been decided, then arrives alone in a province the enemy now holds. Feeding a
+			defender to an attacker one stack at a time is the cheapest trick there is
+			against this AI, and it needs two separate guards to close.
+
+			The first is the detour's own signature: gather_to_battle appends a return leg,
+			so the far end of the path is the province the army set out from. A path that
+			ends where it began is a round trip, and if nowhere along it still has a battle
+			there is nothing left to arrive for. This is the cheap catch, but it only holds
+			while the army is still on its first province: after that its location has moved
+			on while the return destination has not, and the signature no longer matches.
+			*/
+			bool cancelled = false;
+			if(path.size() > 0 && path.at(0) == location) {
+				bool any_live_battle = false;
+				for(uint32_t i = 0; i < path.size(); ++i) {
+					auto battles = state.world.province_get_land_battle_location(path.at(i));
+					if(battles.begin() != battles.end()) {
+						any_live_battle = true;
+						break;
+					}
+				}
+				if(!any_live_battle) {
+					// The station is left alone, so move_idle_guards walks the army back to
+					// its post rather than leaving it standing in the open.
+					military::stop_army_movement(state, ar);
+					cancelled = true;
+				}
+			}
+
+			/*
+			The second guard covers the rest of the march, and every other reason an army
+			might be walking somewhere unwise: look at the province about to be entered. If
+			the fighting there is already over and what remains outweighs what would arrive,
+			stop. Attack orders are exempt, because assign_targets weighed those when it
+			issued them; this rescues guards only.
+			*/
+			if(!cancelled && activity == army_activity::on_guard && path.size() > 0) {
+				auto next = path.at(path.size() - 1); // the path is consumed from the back
+
+				auto battles = state.world.province_get_land_battle_location(next);
+				if(battles.begin() == battles.end()) {
+					float hostile_there = 0.0f;
+					float friendly_there = ai::army_pressure_weight(state, ar.id);
+
+					for(auto other : state.world.province_get_army_location(next)) {
+						auto other_army = other.get_army();
+						auto other_controller = other_army.get_controller_from_army_control();
+						float const w = ai::army_pressure_weight(state, other_army.id);
+						if(w <= 0.0f)
+							continue;
+
+						// A null controller is a rebel army, and rebels fight everyone;
+						// military::are_enemies gets that case wrong (military.cpp:884).
+						if(!other_controller || military::are_at_war(state, controller, other_controller))
+							hostile_there += w;
+						else if(other_controller == controller
+							|| military::are_allied_in_war(state, controller, other_controller))
+							friendly_there += w;
+					}
+
+					if(hostile_there > 0.0f && hostile_there > sufficiency * friendly_there) {
+						military::stop_army_movement(state, ar);
+
+						// The station goes with the march. Cancelling the path alone left the
+						// army pointed at the same place, and move_idle_guards re-issued the
+						// identical order on its next pass for this check to cancel again,
+						// forever. Releasing the station instead sends the army back through
+						// distribute_guards, which can weigh the province against the rest of
+						// the line and hand it a different one.
+						ar.set_ai_province(dcon::province_id{});
+					}
+				}
+			}
+		}
+
+		/*
+		A guard whose station stopped being ours, or stopped being reachable. An AI nation
+		eventually gives up on its own through the transport bail-outs in move_idle_guards,
+		but for a player nation with AI-delegated armies those are unreachable, so nothing
+		clears the station and the army re-runs a failing search every eight days forever.
+		*/
+		if(activity == army_activity::on_guard) {
+			if(auto station = ar.get_ai_province().id; station) {
+				auto station_controller = state.world.province_get_nation_from_province_control(station);
+				bool const valid = station.index() < state.province_definitions.first_sea_province.index()
+					&& province::has_access_to_province(state, controller, station)
+					// Guards are legitimately stationed on an ally's soil, so belonging to us
+					// is not the test.
+					&& (station_controller == controller
+						|| military::are_allied_in_war(state, controller, station_controller));
+
+				if(!valid)
+					ar.set_ai_province(dcon::province_id{});
+			}
+		}
+
+		/*
+		An attack that arrived and found nothing left to do. move_gathered_attackers only
+		releases an army when the province has a controller it is not at war with, so a
+		rebel-held or uncontrolled target keeps the army forever; and its attacking branch
+		requires the target to differ from the current location, which an attack ordered
+		against the army's own province never satisfies.
+		*/
+		if((activity == army_activity::attacking || activity == army_activity::attack_gathered)
+			&& ar.get_ai_province() == location
+			&& !ar.get_arrival_time()) {
+
+			auto occupier = state.world.province_get_nation_from_province_control(location);
+			bool const nothing_left =
+				// Being mid-siege is the normal, correct form of this state.
+				state.world.province_get_siege_progress(location) == 0.0f
+				&& !state.world.province_get_rebel_faction_from_province_rebel_control(location)
+				&& !(occupier && military::are_at_war(state, controller, occupier));
+
+			if(nothing_left) {
+				ar.set_ai_activity(uint8_t(army_activity::on_guard));
+				ar.set_ai_province(dcon::province_id{});
+			}
+		}
+
+		// A merge that failed or finished resets the activity but leaves the old station
+		// behind, and move_idle_guards then dutifully marches the army to it.
+		if(activity == army_activity::unspecified && ar.get_ai_province())
+			ar.set_ai_province(dcon::province_id{});
+	}
+}
+
+/*
+Battles are only ever evaluated for reinforcement at the moment they are created. That was
+survivable while the rule for sending help was a yes-or-no question about adjacent enemies,
+but it is not survivable alongside a cap on how much gets sent: the AI would measure the
+shortfall once, commit against that, and then watch a doomstack walk into the same province
+the following day without ever reconsidering. Re-examining live battles daily is what makes
+the cap a budget rather than a ceiling.
+*/
+void reinforce_live_battles(sys::state& state) {
+	if(!ai::pressure_enabled(state))
+		return;
+
+	std::vector<dcon::nation_id> participants;
+
+	for(auto b : state.world.in_land_battle) {
+		auto location = state.world.land_battle_get_location_from_land_battle_location(b);
+		if(!location)
+			continue;
+
+		participants.clear();
+
+		/*
+		Every belligerent of the war, not only those with an army already in the fight. The
+		creation-time call in military.cpp is narrowed to the engaged, which is affordable
+		there because it fires once per battle; this daily pass is what actually reaches the
+		ally standing two provinces away. Narrowing here as well would have meant a
+		co-belligerent whose armies never happened to join was never asked at all, since
+		nothing else would ever put one of its armies in the battle to qualify it.
+		*/
+		if(auto w = state.world.land_battle_get_war_from_land_battle_in_war(b); w) {
+			for(auto par : state.world.war_get_war_participant(w)) {
+				auto controller = par.get_nation().id;
+				if(!controller || state.world.nation_get_is_player_controlled(controller))
+					continue;
+
+				participants.push_back(controller);
+			}
+		} else {
+			// A battle outside any war is a rebel suppression; only the armies present have
+			// a stake in it.
+			for(auto par : state.world.land_battle_get_army_battle_participation(b)) {
+				auto controller = par.get_army().get_controller_from_army_control();
+				if(!controller || state.world.nation_get_is_player_controlled(controller))
+					continue;
+				if(std::find(participants.begin(), participants.end(), controller) != participants.end())
+					continue;
+
+				participants.push_back(controller);
+			}
+		}
+
+		// Collected first: gathering issues movement orders, and doing that while walking
+		// the participant list would mean mutating around an active iterator.
+		for(auto controller : participants)
+			gather_to_battle(state, controller, location);
+	}
+}
+
+void daily_cleanup(sys::state& state) {
+	/*
+	No cache clear here. cached_tactical_field already stamps each nation's field with the day
+	it was built and rebuilds on the first read of a new one, and the load path clears outright
+	in state::fill_unsaved_data. Clearing again from here was worse than redundant: this runs
+	near the end of the tick, well after update_movement has built fields and recorded debits
+	against them, so it threw away the record of which armies had already been committed today
+	and forced a second build of every field a few lines later in reinforce_live_battles. The
+	debits are meant to survive the whole day -- an army sent to one battle must not still read
+	as cover when the next one is weighed.
+	*/
+	validate_ai_orders(state);
+	reinforce_live_battles(state);
 }
 
 
@@ -967,13 +1192,62 @@ enum class province_class : uint8_t {
 struct classified_province {
 	dcon::province_id id;
 	province_class c;
+	// Coarse magnitude of the threat facing this province, as a power of two; -128 means
+	// no pressure data, which is also what every province gets in peacetime.
+	int8_t pressure = -128;
 };
 
 void distribute_guards(sys::state& state, dcon::nation_id n) {
 	std::vector<classified_province> provinces;
 	provinces.reserve(state.world.province_size());
 
+	/*
+	Where each province sits in the list above, so the echelon passes can ask what a
+	neighbour was classified as in constant time. They used to scan the whole list once per
+	adjacency, which costs a large empire several million comparisons per rebuild; that was
+	tolerable while defenses were redistributed twice a month and is not now that a nation
+	at war rebuilds them every few days. Only valid until the list is sorted below.
+	*/
+	std::vector<int32_t> slot_of(state.world.province_size(), -1);
+
 	auto cap = state.world.nation_get_capital(n);
+
+	/*
+	Built before anything is classified, because a nation with nothing to station has no use
+	for the rest of this function, and most nations on most passes are in that position.
+	*/
+	std::vector<dcon::army_id> guards_list;
+	bool const use_pressure = ai::pressure_enabled(state) && state.world.nation_get_is_at_war(n);
+
+	{
+		auto controlled = state.world.nation_get_army_control(n);
+		guards_list.reserve(size_t(controlled.end() - controlled.begin()));
+		for(auto a : controlled) {
+			if(a.get_army().get_ai_activity() != uint8_t(army_activity::on_guard))
+				continue;
+
+			/*
+			Every on_guard army is listed, including those already marching to a station.
+			Excluding them looks like it prevents mid-march churn, but this pass matches
+			provinces to guards rather than guards to provinces: an in-flight army that is
+			left out of the list does not take its destination province out of the running,
+			so that province simply collects a second guard, and then a third. Marches
+			routinely outlast the four-day wartime cadence, so most of the garrison can be
+			invisible on any given pass. Listing everyone keeps each pass a complete
+			re-matching, which is what makes an existing claim on a province visible.
+			*/
+			guards_list.push_back(a.get_army().id);
+		}
+	}
+
+	if(guards_list.empty())
+		return;
+
+	// Strategic horizon: an army tied up in a battle still counts, at a discount, because
+	// the battle will end and the mass will still be there.
+	static thread_local ai::pressure_field guard_field;
+	if(use_pressure)
+		ai::build_pressure_field(state, n, ai::pressure_horizon::strategic, guard_field);
 
 	// 1. Primary province classification
 	for(auto c : state.world.nation_get_province_control(n)) {
@@ -1028,7 +1302,9 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 				}
 			}
 		}
-		provinces.push_back(classified_province{ c.get_province().id, cls });
+		slot_of[c.get_province().id.index()] = int32_t(provinces.size());
+		provinces.push_back(classified_province{ c.get_province().id, cls,
+			use_pressure ? ai::pressure_bucket(guard_field.hostile_at(c.get_province().id)) : int8_t(-128) });
 	}
 
 	// 1.5 Allied frontline (Allied provinces adjacent to the enemy)
@@ -1053,11 +1329,10 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 
 					if(is_hostile) {
 						auto prov_id = c.get_province().id;
-						auto it = std::find_if(provinces.begin(), provinces.end(), [&](classified_province const& item) {
-							return item.id == prov_id;
-						});
-						if(it == provinces.end()) {
-							provinces.push_back(classified_province{ prov_id, province_class::allied_hostile_border });
+						if(slot_of[prov_id.index()] < 0) {
+							slot_of[prov_id.index()] = int32_t(provinces.size());
+							provinces.push_back(classified_province{ prov_id, province_class::allied_hostile_border,
+								use_pressure ? ai::pressure_bucket(guard_field.hostile_at(prov_id)) : int8_t(-128) });
 						}
 					}
 				}
@@ -1071,10 +1346,8 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 			auto fat_p = dcon::fatten(state.world, cp.id);
 			for(auto padj : fat_p.get_province_adjacency()) {
 				auto other = padj.get_connected_provinces(0) == fat_p ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
-				auto it = std::find_if(provinces.begin(), provinces.end(), [&](classified_province const& item) {
-					return item.id == other.id && item.c == province_class::hostile_border;
-				});
-				if(it != provinces.end()) {
+				auto slot = slot_of[other.id.index()];
+				if(slot >= 0 && provinces[slot].c == province_class::hostile_border) {
 					cp.c = province_class::hostile_rear_1;
 					break;
 				}
@@ -1088,10 +1361,8 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 			auto fat_p = dcon::fatten(state.world, cp.id);
 			for(auto padj : fat_p.get_province_adjacency()) {
 				auto other = padj.get_connected_provinces(0) == fat_p ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
-				auto it = std::find_if(provinces.begin(), provinces.end(), [&](classified_province const& item) {
-					return item.id == other.id && item.c == province_class::hostile_rear_1;
-				});
-				if(it != provinces.end()) {
+				auto slot = slot_of[other.id.index()];
+				if(slot >= 0 && provinces[slot].c == province_class::hostile_rear_1) {
 					cp.c = province_class::hostile_rear_2;
 					break;
 				}
@@ -1103,6 +1374,18 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 		if(a.c != b.c) {
 			return uint8_t(a.c) > uint8_t(b.c);
 		}
+		/*
+		Within one tier, garrison the heavier threat first. This reorders the border ring so
+		that the axis actually under weight is manned before a quiet stretch of the same
+		class; it deliberately does not reorder across tiers, because the class ordering is
+		the depth-in-depth scheme and the stage loop below counts down through it.
+
+		In peacetime, and whenever the model is switched off, every bucket is -128 and this
+		clause is never reached, so the ordering is exactly what it was before.
+		*/
+		if(a.pressure != b.pressure) {
+			return a.pressure > b.pressure;
+		}
 		auto adist = province::sorting_distance(state, a.id, cap);
 		auto bdist = province::sorting_distance(state, b.id, cap);
 		if(adist != bdist) {
@@ -1110,15 +1393,6 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 		}
 		return a.id.index() < b.id.index();
 	});
-
-	// form list of guards
-	std::vector<dcon::army_id> guards_list;
-	guards_list.reserve(state.world.army_size());
-	for(auto a : state.world.nation_get_army_control(n)) {
-		if(a.get_army().get_ai_activity() == uint8_t(army_activity::on_guard)) {
-			guards_list.push_back(a.get_army().id);
-		}
-	}
 
 	// distribute target provinces
 	uint32_t end_of_stage = 0;
@@ -1148,8 +1422,27 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 					for(uint32_t k = uint32_t(guards_list.size()); k-- > 0;) {
 						auto guard_loc = state.world.army_get_location_from_army_location(guards_list[k]);
 
-						if(military::relative_attrition_amount(state, guards_list[k], p) >= 2.f)
-							continue; //too heavy
+						/*
+						A "too heavy for this province" test used to sit here. It could never
+						fire: relative_attrition_amount ends in std::min(1.f, value * 0.01f)
+						(military.cpp:6656), so it is bounded by 1.0 and was compared against
+						2.0. Deleted rather than repaired, because every repair considered is
+						worse than the gap.
+
+						Lowering the threshold turns it into a cliff rather than a gradient:
+						the value is capped by the province's max_attrition modifier, which is
+						0 on ordinary terrain, so the test stays a no-op almost everywhere and
+						becomes "no guards at all" on exactly the harsh terrain worth holding.
+						That is the regression commit 1bd387271 reverted. Comparing
+						local_army_weight against the supply limit instead has the same cliff
+						plus a griefing vector: that count includes every army in the province
+						whoever owns it, so an ally parking a doomstack in a mountain pass
+						would make this AI refuse to garrison its own pass.
+
+						Capacity is therefore bounded only by the peacetime_attrition_limit
+						ladder above, which already gates how many stacks a poor province
+						accumulates.
+						*/
 
 						/*
 						// this wont work because a unit could end up in, for example, a subject's region at the end of a war
@@ -1415,8 +1708,13 @@ bool army_ready_for_battle(sys::state& state, dcon::nation_id n, dcon::army_id a
 	return state.world.regiment_get_org(sample_reg) > 0.7f;
 }
 
+/*
+The original gathering rule, kept intact and still used whenever the pressure model is off
+and for every nation at peace. Rebel suppression runs through here, and a change aimed at
+wars has no business altering it.
+*/
 // MP compliant
-void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p) {
+void gather_to_battle_legacy(sys::state& state, dcon::nation_id n, dcon::province_id p) {
 	for(auto ar : state.world.nation_get_army_control(n)) {
 		army_activity activity = army_activity(ar.get_army().get_ai_activity());
 		if(ar.get_army().get_battle_from_army_battle_participation()
@@ -1471,6 +1769,156 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 		// move back and fourth between the battle and original location
 		military::move_army_ai(state, ar.get_army().id, p, n);
 		military::move_army_ai(state, ar.get_army().id, ar.get_army().get_location_from_army_location(), n, false);
+	}
+}
+
+/*
+Deciding who goes to a battle.
+
+What this replaces asked one question per candidate: is there any enemy army in a province
+next to me that is not already fighting. A single regiment answered yes, so one scout could
+freeze an entire army group in place indefinitely, and it counted enemies across impassable
+borders and in adjacent sea zones too, which meant a fleet parked offshore permanently
+immobilised every coastal garrison.
+
+The replacement asks two questions with arithmetic in them. Is what faces me worth holding
+against at all, and if I leave, is this sector still covered? Neither can be answered by a
+token, and both scale with the actual mass involved. A third test caps how much goes to any
+one battle, so the AI stops emptying a theatre into a fight it has already won.
+*/
+// MP compliant
+void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p) {
+	if(!ai::pressure_enabled(state) || !state.world.nation_get_is_at_war(n)) {
+		gather_to_battle_legacy(state, n, p);
+		return;
+	}
+
+	float hostile_engaged = 0.0f;
+	float friendly_engaged = 0.0f;
+	if(!ai::battle_side_weights(state, n, p, hostile_engaged, friendly_engaged))
+		return; // the fighting is already over
+
+	struct candidate {
+		dcon::army_id a;
+		dcon::province_id loc;
+		float distance = 0.0f;
+		float weight = 0.0f;
+	};
+
+	// Candidates are gathered before the field is touched: a nation with nothing within
+	// reach must not pay for building one.
+	std::vector<candidate> candidates;
+	for(auto ar : state.world.nation_get_army_control(n)) {
+		army_activity activity = army_activity(ar.get_army().get_ai_activity());
+		if(ar.get_army().get_battle_from_army_battle_participation()
+			|| ar.get_army().get_navy_from_army_transport()
+			|| ar.get_army().get_black_flag()
+			|| ar.get_army().get_arrival_time()
+			|| (activity != army_activity::on_guard && activity != army_activity::attacking && activity != army_activity::attack_gathered && activity != army_activity::attack_transport)
+			|| !army_ready_for_battle(state, n, ar.get_army())) {
+
+			continue;
+		}
+
+		auto location = ar.get_army().get_location_from_army_location();
+		if(location.id == p)
+			continue;
+
+		auto sdist = province::sorting_distance(state, location, p);
+		if(sdist > state.defines.alice_ai_gather_radius)
+			continue;
+
+		float const w = ai::army_pressure_weight(state, ar.get_army().id);
+		if(w <= 0.0f)
+			continue;
+
+		candidates.push_back(candidate{ ar.get_army().id, location.id, sdist, w });
+	}
+
+	if(candidates.empty())
+		return;
+
+	/*
+	What still has to be sent, discounting help already on the road. Without that discount the
+	same shortfall would be filled again on every re-examination and the theatre would drain a
+	day at a time.
+
+	Computed here rather than up front because inbound_friendly_weight walks every army of the
+	nation and every province of its path. reinforce_live_battles now asks every belligerent of
+	the war about every live battle daily, so most calls reach this function with nothing in
+	range; those must fall out at the candidate scan above, which touches only armies, and not
+	pay for a path walk first.
+	*/
+	float const need = std::max(1.0f, state.defines.alice_ai_reinforce_sufficiency) * hostile_engaged
+		- friendly_engaged
+		- ai::inbound_friendly_weight(state, n, p);
+
+	if(need <= 0.0f)
+		return;
+
+	// Nearest first: sorting_distance is the negated cosine of the arc, so smaller is
+	// closer. The tie-break on id keeps the order total, which every client depends on.
+	std::sort(candidates.begin(), candidates.end(), [](candidate const& a, candidate const& b) {
+		if(a.distance != b.distance)
+			return a.distance < b.distance;
+		return a.a.index() < b.a.index();
+	});
+
+	auto& field = ai::cached_tactical_field(state, n);
+
+	float const hold_ratio = std::max(0.0f, state.defines.alice_ai_hold_ratio);
+	float const overwhelm_ratio = std::max(1.0f, state.defines.alice_ai_overwhelm_ratio);
+	float const token_pressure = std::max(0.0f, state.defines.alice_ai_token_pressure);
+	int32_t const max_commits = int32_t(std::clamp(state.defines.alice_ai_gather_max_commits, 1.0f, 64.0f));
+
+	float committed = 0.0f;
+	int32_t commits = 0;
+
+	for(auto const& c : candidates) {
+		if(committed >= need || commits >= max_commits)
+			break;
+
+		// The field was built earlier in the day. Anyone who has moved since is skipped,
+		// because the debit below would otherwise be subtracted from the wrong place.
+		if(state.world.army_get_location_from_army_location(c.a) != c.loc)
+			continue;
+
+		float const facing = field.hostile_at(c.loc);
+		float const cover = field.friendly_at(c.loc);
+
+		// Either what faces this army is not worth holding against, or the sector survives
+		// its departure. The second is what the old boolean was reaching for: it asks
+		// whether the line still stands afterwards, not whether an enemy exists.
+		bool const overwhelm = facing <= token_pressure || cover >= overwhelm_ratio * facing;
+		bool const cover_remains = std::max(0.0f, cover - c.weight) >= hold_ratio * facing;
+
+		if(!overwhelm && !cover_remains)
+			continue; // hold the line
+
+		/*
+		Try the march before charging anything for it. Candidates are admitted on
+		province::sorting_distance alone, which is a great-circle measure with no notion of
+		reachability, so an army across a strait or a closed border gets in and is picked
+		first for being nearest. Its pathfinding then fails, and set_army_path returns false
+		having touched nothing (military.cpp:10552). Charging the debit up front meant that
+		army's own province was recorded as that much lighter for the rest of the day while
+		not one regiment had actually been dispatched, and the garrison genuinely holding
+		that province then read the thinned cover and left too.
+		*/
+		if(!military::move_army_ai(state, c.a, p, n))
+			continue;
+
+		// Then home again. This leg is allowed to fail: the army is committed either way, and
+		// the debit below names the province and weight outright rather than re-deriving them
+		// from whatever path survived, so the accounting does not depend on it.
+		military::move_army_ai(state, c.a, c.loc, n, false);
+
+		// Each departure lowers the cover the next candidate sees, so a sector cannot be
+		// emptied by several armies each believing the others stayed.
+		ai::debit_friendly_at(state, field, c.loc, c.weight, n);
+
+		committed += c.weight;
+		++commits;
 	}
 }
 
@@ -2095,12 +2543,17 @@ void make_attacks(sys::state& state) {
 	});
 }
 
-void make_defense(sys::state& state) {
+void make_defense(sys::state& state, bool at_war_only) {
 	concurrency::parallel_for(uint32_t(0), state.world.nation_size(), [&](uint32_t i) {
 		dcon::nation_id n{ dcon::nation_id::value_base_t(i) };
-		if(state.world.nation_is_valid(n)) {
-			distribute_guards(state, n);
-		}
+		if(!state.world.nation_is_valid(n))
+			return;
+		// A nation at peace has nothing to react to, so it keeps the cheap cadence and
+		// only the belligerents pay for the frequent passes.
+		if(at_war_only && !state.world.nation_get_is_at_war(n))
+			return;
+
+		distribute_guards(state, n);
 	});
 }
 

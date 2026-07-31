@@ -392,3 +392,6 @@ FodyWeavers.xsd
 
 # User's git files
 *.diff
+
+# Standalone g++ -fsyntax-only harness (see .syntax-check/check.sh)
+.syntax-check/
