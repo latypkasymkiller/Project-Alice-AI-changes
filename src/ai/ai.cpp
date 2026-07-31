@@ -1849,11 +1849,38 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 	range; those must fall out at the candidate scan above, which touches only armies, and not
 	pay for a path walk first.
 	*/
+	float const inbound = ai::inbound_friendly_weight(state, n, p);
+
 	float const need = std::max(1.0f, state.defines.alice_ai_reinforce_sufficiency) * hostile_engaged
 		- friendly_engaged
-		- ai::inbound_friendly_weight(state, n, p);
+		- inbound;
 
 	if(need <= 0.0f)
+		return;
+
+	/*
+	How much more this province can actually feed. Need alone answers "how much would win the
+	battle" and has no upper bound: on a large enough fight it asks for more than the nation
+	owns, and every army in reach walks into one tile. Observed as three 30k armies stacked in
+	a province that supplies one, which is also a tile an opponent can encircle in a single
+	move.
+
+	supply_limit_in_province is in the same units as army weight -- relative_attrition_amount
+	subtracts one from the other directly (military.cpp:6685) -- so this is a plain comparison.
+	Only our own weight is counted: enemy armies standing in the province do drive the game's
+	attrition, but charging their weight against our capacity would mean the AI stops
+	reinforcing exactly the battles it is losing.
+
+	Note that overstacking is nearly free in the current attrition model, which clamps to the
+	province's max_attrition modifier -- zero on ordinary terrain. So nothing in the simulation
+	punishes the pile; the cap has to be explicit.
+	*/
+	float const supply_tolerance = std::max(1.0f, state.defines.alice_ai_battle_supply_tolerance);
+	float const capacity = float(military::supply_limit_in_province(state, n, p)) * supply_tolerance
+		- friendly_engaged
+		- inbound;
+
+	if(capacity <= 0.0f)
 		return;
 
 	// Nearest first: sorting_distance is the negated cosine of the arc, so smaller is
@@ -1867,7 +1894,6 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 	auto& field = ai::cached_tactical_field(state, n);
 
 	float const hold_ratio = std::max(0.0f, state.defines.alice_ai_hold_ratio);
-	float const overwhelm_ratio = std::max(1.0f, state.defines.alice_ai_overwhelm_ratio);
 	float const token_pressure = std::max(0.0f, state.defines.alice_ai_token_pressure);
 	int32_t const max_commits = int32_t(std::clamp(state.defines.alice_ai_gather_max_commits, 1.0f, 64.0f));
 
@@ -1883,13 +1909,34 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 		if(state.world.army_get_location_from_army_location(c.a) != c.loc)
 			continue;
 
+		// Tested per army rather than against the running total, because armies move whole:
+		// letting one in on the grounds that some capacity remains is how a province that
+		// fits one army ends up holding three. A candidate too large for what is left is
+		// skipped rather than breaking the loop, so a smaller one behind it can still go.
+		if(committed + c.weight > capacity)
+			continue;
+
 		float const facing = field.hostile_at(c.loc);
 		float const cover = field.friendly_at(c.loc);
 
-		// Either what faces this army is not worth holding against, or the sector survives
-		// its departure. The second is what the old boolean was reaching for: it asks
-		// whether the line still stands afterwards, not whether an enemy exists.
-		bool const overwhelm = facing <= token_pressure || cover >= overwhelm_ratio * facing;
+		/*
+		Either what faces this army is beneath notice, or the sector survives its departure.
+
+		A third test used to sit in the first clause: cover >= overwhelm_ratio * facing, meant
+		to read as "the enemy here is hopelessly outmatched, so leaving costs nothing". It was
+		circular and had to go. cover is the friendly pressure at this province, and the field
+		seeds every army at its own location, so the departing army's weight is the bulk of the
+		number being used to justify its departure -- "I am strong here, therefore I may leave",
+		where the strength is precisely what leaves. The bigger the army, the more readily it
+		emptied its own province: 50 weight facing 4 cleared 10 * 4 = 40 and marched off, and
+		the province it had been holding was left at zero against an enemy still standing next
+		to it. Observed in a 1916 save as a front stripped bare rather than merely thinned.
+
+		Rewriting it to measure what remains rather than what is present would have made it
+		strictly stronger than cover_remains below (a ratio of 10 against 0.75) and therefore
+		never the deciding test, so the clause is gone rather than repaired.
+		*/
+		bool const overwhelm = facing <= token_pressure;
 		bool const cover_remains = std::max(0.0f, cover - c.weight) >= hold_ratio * facing;
 
 		if(!overwhelm && !cover_remains)

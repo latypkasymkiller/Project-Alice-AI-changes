@@ -685,8 +685,9 @@
 	LUA_DEFINES_LIST_ELEMENT(alice_ai_pressure_destination_weight, 0.500000)                                                       \
 /* Friendly weight a sector must retain, relative to hostile pressure, for a garrison to be free to leave */                       \
 	LUA_DEFINES_LIST_ELEMENT(alice_ai_hold_ratio, 0.750000)                                                                        \
-/* An army this many times heavier than the pressure facing it ignores the hold rule (anti-pinning by token forces) */             \
-	LUA_DEFINES_LIST_ELEMENT(alice_ai_overwhelm_ratio, 10.000000)                                                                  \
+/* How far reinforcements may push a battle province past its supply limit. 1.0 forbids overstacking outright; raise it */         \
+/* to let the AI accept attrition to win a battle it would otherwise be unable to feed reinforcements into. */                     \
+	LUA_DEFINES_LIST_ELEMENT(alice_ai_battle_supply_tolerance, 1.000000)                                                           \
 /* Safety margin over estimated enemy strength when deciding how much to commit to one battle */                                   \
 	LUA_DEFINES_LIST_ELEMENT(alice_ai_reinforce_sufficiency, 1.500000)                                                             \
 /* Days between defensive redistributions while at war (peacetime keeps the twice-a-month cadence) */                              \

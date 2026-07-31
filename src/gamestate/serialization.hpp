@@ -193,7 +193,11 @@ inline uint8_t const* deserialize(uint8_t const* ptr_in, ankerl::unordered_dense
 // 46: parsing::defines gained the alice_ai_* pressure-field tunables. The whole struct is
 // memcpy'd into the scenario blob (serialization.cpp:174, :379), so its size is part of the
 // format and an older .bin would be read at the wrong offsets rather than rejected.
-constexpr inline uint32_t save_file_version = 46;
+// 47: alice_ai_overwhelm_ratio was replaced in place by alice_ai_battle_supply_tolerance. The
+// element count, and so the struct size, is unchanged -- which is exactly why this bump is
+// needed. Without it an older .bin would load and be accepted, and the 10.0 sitting at that
+// offset would be read as a supply tolerance, silently lifting the cap it is meant to impose.
+constexpr inline uint32_t save_file_version = 47;
 constexpr inline uint32_t scenario_file_version = 139 + save_file_version;
 
 struct scenario_header {
