@@ -759,8 +759,10 @@ void validate_ai_orders(sys::state& state) {
 					&& (station_controller == controller
 						|| military::are_allied_in_war(state, controller, station_controller));
 
-				if(!valid)
+				if(!valid) {
+					military::stop_army_movement(state, ar.id);
 					ar.set_ai_province(dcon::province_id{});
+				}
 			}
 		}
 
@@ -1510,6 +1512,9 @@ dcon::navy_id find_transport_fleet(sys::state& state, dcon::nation_id controller
 }
 
 void move_idle_guards(sys::state& state) {
+	std::vector<dcon::army_id> require_transport;
+	require_transport.reserve(state.world.army_size());
+
 	// 1. Evacuate exiled (black-flagged) idle armies from foreign land to owned home territory
 	for(auto ar : state.world.in_army) {
 		if(ar.get_black_flag()
@@ -1539,18 +1544,18 @@ void move_idle_guards(sys::state& state) {
 				if(home_target) {
 					auto path = province::make_land_unit_path(state, army_loc.id, home_target, controller, ar);
 					if(!path.empty()) {
-						military::set_army_path(state, ar, path, controller);
+						military::set_army_path(state, ar.id, path, controller);
 						ar.set_ai_activity(uint8_t(army_activity::on_guard));
 						ar.set_ai_province(home_target);
 						continue;
+					} else {
+						ar.set_ai_province(home_target);
+						require_transport.push_back(ar.id);
 					}
 				}
 			}
 		}
 	}
-
-	std::vector<dcon::army_id> require_transport;
-	require_transport.reserve(state.world.army_size());
 
 	for(auto ar : state.world.in_army) {
 		if(ar.get_ai_activity() == uint8_t(army_activity::on_guard)
