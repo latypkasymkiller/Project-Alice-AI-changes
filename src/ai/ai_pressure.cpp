@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
+#include <mutex>
 
 namespace ai {
 
@@ -140,6 +142,17 @@ void spread_pressure(sys::state& state, dcon::province_id origin, float weight, 
 	if(!is_land_province(state, origin) || weight == 0.0f)
 		return;
 
+	/*
+	`out` is the caller's buffer, and every index used below comes from a province id rather
+	than from its length, so the two are only related by the caller having sized it. Checking
+	that here rather than trusting it: is_land_province bounds the index against
+	first_sea_province, which is scenario data and says nothing about whether this particular
+	vector was ever allocated. An unsized buffer used to fault on the very first write below,
+	at address 4 * origin.index(), because operator[] on an empty vector dereferences null.
+	*/
+	if(out.size() != size_t(state.world.province_size()))
+		return;
+
 	float const falloff = define_f(state.defines.alice_ai_pressure_falloff, 0.05f, 0.95f);
 	float const min_contribution = define_f(state.defines.alice_ai_pressure_min_contribution, 0.01f, 1000.0f);
 	int32_t const max_hops = int32_t(define_f(state.defines.alice_ai_pressure_max_hops, 0.0f, 64.0f));
@@ -259,15 +272,38 @@ void collect_army_seeds(sys::state& state, dcon::army_id a, dcon::nation_id cont
 	}
 }
 
-// Tactical fields for the current day, indexed by nation. Serial paths only. Sized once per
-// day, so a reference handed out stays valid for the rest of the day.
+/*
+Tactical fields for the current day, indexed by nation.
+
+Reached from parallel_for in two places -- make_attacks -> assign_targets and, indirectly,
+anything that gathers to a battle -- so the bookkeeping here has to survive concurrent entry.
+Two properties make that work, and both are load-bearing:
+
+The fields are owned through pointers and never destroyed, only marked stale. A caller holds
+a pressure_field& across the movement orders it issues, so an entry that is freed, or moved
+by the vector growing, is a reference into released memory. Growing a vector of pointers
+moves the pointers, not what they point at.
+
+The vector of pointers itself only ever grows, and only under the lock. Everything after that
+is per-nation: parallel_for hands each nation to exactly one worker, so two threads never
+touch the same slot, and the expensive part -- building the field -- runs outside the lock.
+*/
 struct tactical_cache {
-	std::vector<pressure_field> fields;
+	std::vector<std::unique_ptr<pressure_field>> fields;
 	std::vector<int32_t> day;
 	uint32_t province_count = 0;
 };
 
 tactical_cache serial_cache;
+std::mutex serial_cache_lock;
+
+/*
+Handed back when a nation has no slot in the cache. Deliberately left unsized, so it fails
+pressure_field::valid() and reads as zero pressure everywhere: a caller that gets this makes
+the same decisions it would with the model switched off, rather than indexing a slot that
+does not exist.
+*/
+pressure_field empty_field;
 
 } // namespace
 
@@ -329,7 +365,15 @@ float army_pressure_weight(sys::state& state, dcon::army_id a) {
 void build_pressure_field(sys::state& state, dcon::nation_id n, pressure_horizon horizon, pressure_field& out) {
 	auto const province_count = state.world.province_size();
 
-	if(out.hostile.size() == province_count) {
+	/*
+	Both sides are tested, not just one. The reuse test used to read the length of `hostile`
+	alone and take it as an answer about `friendly` too, which holds only while nothing can
+	ever observe the field between the two assign calls below. That is not a property of this
+	function -- it is a property of every caller and every thread -- and when it failed the
+	fill branch was taken over a `friendly` that had never been allocated, and the first seed
+	deposited into it faulted.
+	*/
+	if(out.hostile.size() == province_count && out.friendly.size() == province_count) {
 		std::fill(out.hostile.begin(), out.hostile.end(), 0.0f);
 		std::fill(out.friendly.begin(), out.friendly.end(), 0.0f);
 	} else {
@@ -384,24 +428,66 @@ pressure_field& cached_tactical_field(sys::state& state, dcon::nation_id n) {
 	auto const province_count = state.world.province_size();
 	auto const today = state.current_date.value;
 
-	if(serial_cache.fields.size() != nation_count || serial_cache.province_count != province_count) {
-		serial_cache.fields.assign(nation_count, pressure_field{});
-		serial_cache.day.assign(nation_count, -1);
-		serial_cache.province_count = province_count;
-	}
-
 	auto const slot = uint32_t(n.index());
-	if(serial_cache.day[slot] != today) {
-		serial_cache.day[slot] = today;
-		build_pressure_field(state, n, pressure_horizon::tactical, serial_cache.fields[slot]);
+
+	pressure_field* field = nullptr;
+	bool stale = false;
+
+	{
+		std::lock_guard<std::mutex> guard{ serial_cache_lock };
+
+		/*
+		A different province count means every field is the wrong shape. They are marked
+		stale rather than dropped, because a caller elsewhere may be holding one; the build
+		below re-sizes whatever it is handed, so a stale field heals itself on first use.
+		*/
+		if(serial_cache.province_count != province_count) {
+			serial_cache.province_count = province_count;
+			std::fill(serial_cache.day.begin(), serial_cache.day.end(), -1);
+		}
+
+		while(serial_cache.fields.size() < size_t(nation_count)) {
+			serial_cache.fields.push_back(std::make_unique<pressure_field>());
+			serial_cache.day.push_back(-1);
+		}
+
+		if(slot >= serial_cache.fields.size())
+			return empty_field;
+
+		field = serial_cache.fields[slot].get();
+		stale = serial_cache.day[slot] != today;
 	}
 
-	return serial_cache.fields[slot];
+	if(stale) {
+		// Outside the lock: this is the expensive part, one traversal per province holding
+		// armies, and the whole point of the fields being per-nation is that the nations can
+		// be built at the same time.
+		build_pressure_field(state, n, pressure_horizon::tactical, *field);
+
+		/*
+		Stamped after the build, not before. Stamping first declares the field current while
+		its two vectors are still being allocated, so anything reaching this function again
+		in that window is handed a field that is only half there and writes into a vector
+		that has no storage. Under the lock because day grows with fields.
+		*/
+		std::lock_guard<std::mutex> guard{ serial_cache_lock };
+		serial_cache.day[slot] = today;
+	}
+
+	return *field;
 }
 
 void clear_pressure_cache() {
-	serial_cache.fields.clear();
-	serial_cache.day.clear();
+	std::lock_guard<std::mutex> guard{ serial_cache_lock };
+
+	/*
+	The fields themselves are kept. What has to go is the belief that they are current, since
+	date::value repeats across every save of a scenario and a load can land on a day the cache
+	has already seen. Freeing them instead would be the one operation this cache must never
+	do: callers hold references into it, and build re-sizes and re-zeroes on first use anyway,
+	so nothing stale survives the stamp being cleared.
+	*/
+	std::fill(serial_cache.day.begin(), serial_cache.day.end(), -1);
 	serial_cache.province_count = 0;
 }
 

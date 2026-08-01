@@ -38,8 +38,13 @@ struct pressure_field {
 	std::vector<float> hostile;
 	std::vector<float> friendly;
 
+	/*
+	Both sides, because the only caller of this is debit_friendly_at, which writes to
+	`friendly`. Asking about `hostile` and then writing to the other vector is not a check at
+	all: a field caught between the two allocations passes it and then faults.
+	*/
 	bool valid() const {
-		return !hostile.empty();
+		return !hostile.empty() && hostile.size() == friendly.size();
 	}
 
 	/*
@@ -102,10 +107,15 @@ int8_t pressure_bucket(float v);
 void build_pressure_field(sys::state& state, dcon::nation_id n, pressure_horizon horizon, pressure_field& out);
 
 /*
-n's tactical field for the current day, built on first use and then reused. Only safe from
-single-threaded parts of the tick; distribute_guards runs under parallel_for and builds its
-own. Debits applied during the day persist, which is the point: an army committed to one
-battle must not still read as cover for the next.
+n's tactical field for the current day, built on first use and then reused. Debits applied
+during the day persist, which is the point: an army committed to one battle must not still
+read as cover for the next.
+
+Safe to call from parallel_for, which assign_targets does, on the condition that each nation
+is visited by exactly one worker -- the fields are per-nation and nothing serialises access
+within a slot. The reference stays good for the rest of the run: the cache never frees a
+field, only marks it stale. distribute_guards still builds its own, because it wants the
+strategic horizon rather than this one.
 */
 pressure_field& cached_tactical_field(sys::state& state, dcon::nation_id n);
 
