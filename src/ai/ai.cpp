@@ -1199,6 +1199,92 @@ struct classified_province {
 	int8_t pressure = -128;
 };
 
+dcon::army_id split_army_for_weight(sys::state& state, dcon::nation_id n, dcon::army_id a, float desired_weight) {
+	if(!a || !(desired_weight > 0.0f))
+		return a;
+
+	float const reg_weight = state.defines.pop_size_per_regiment / 1000.0f;
+	if(!(reg_weight > 0.0f))
+		return a;
+
+	auto regs = state.world.army_get_army_membership(a);
+	uint32_t total_regs = 0;
+	float total_weight = 0.0f;
+	std::vector<dcon::regiment_id> frontline;
+	std::vector<dcon::regiment_id> support;
+
+	for(auto r : regs) {
+		auto reg = r.get_regiment();
+		float w = reg_weight * reg.get_strength();
+		total_weight += w;
+		++total_regs;
+
+		auto type = reg.get_type();
+		auto etype = state.military_definitions.unit_base_definitions[type].type;
+		if(etype == military::unit_type::support || etype == military::unit_type::special) {
+			support.push_back(reg.id);
+		} else {
+			frontline.push_back(reg.id);
+		}
+	}
+
+	// Если в армии всего 1 полк или запрашиваемый вес покрывает почти всю армию — не делим
+	if(total_regs <= 1 || desired_weight >= (total_weight - reg_weight * 0.5f))
+		return a;
+
+	// Считаем сколько полков нужно отделить (+0.5f для округления без #include <cmath>)
+	uint32_t target_reg_count = std::clamp(uint32_t(desired_weight / reg_weight + 0.5f), 1u, total_regs - 1u);
+
+	std::vector<dcon::regiment_id> to_split;
+	to_split.reserve(target_reg_count);
+
+	// Соблюдаем баланс: ~50% фронт, ~50% поддержка
+	uint32_t target_front = (target_reg_count + 1) / 2;
+	uint32_t target_supp = target_reg_count / 2;
+
+	uint32_t taken_front = 0;
+	for(size_t i = 0; i < frontline.size() && taken_front < target_front; ++i) {
+		to_split.push_back(frontline[i]);
+		++taken_front;
+	}
+
+	uint32_t taken_supp = 0;
+	for(size_t i = 0; i < support.size() && taken_supp < target_supp; ++i) {
+		to_split.push_back(support[i]);
+		++taken_supp;
+	}
+
+	// Если не хватило одного типа, добираем из другого
+	if(to_split.size() < target_reg_count) {
+		for(size_t i = taken_front; i < frontline.size() && to_split.size() < target_reg_count; ++i) {
+			to_split.push_back(frontline[i]);
+		}
+		for(size_t i = taken_supp; i < support.size() && to_split.size() < target_reg_count; ++i) {
+			to_split.push_back(support[i]);
+		}
+	}
+
+	if(to_split.empty() || to_split.size() >= total_regs)
+		return a;
+
+	if(!military::can_split_army<command::actor::ai>(state, n, a, to_split))
+		return a;
+
+	military::split_army<command::actor::ai>(state, n, a, to_split);
+
+	// ОШИБКА ИСПРАВЛЕНА: получаем army_id напрямую, без .id
+	dcon::army_id new_army = state.world.regiment_get_army_from_army_membership(to_split[0]);
+
+	// ОШИБКА ИСПРАВЛЕНА: копируем AI-статус, чтобы армия не "зависла" в логике
+	if(new_army && new_army != a) {
+		state.world.army_set_ai_activity(new_army, state.world.army_get_ai_activity(a));
+		state.world.army_set_ai_province(new_army, state.world.army_get_ai_province(a));
+		state.world.army_set_is_ai_controlled(new_army, state.world.army_get_is_ai_controlled(a));
+	}
+
+	return new_army ? new_army : a;
+}
+
 void distribute_guards(sys::state& state, dcon::nation_id n) {
 	std::vector<classified_province> provinces;
 	provinces.reserve(state.world.province_size());
@@ -1267,8 +1353,11 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 			} else if(!n_controller && !other.get_rebel_faction_from_province_rebel_control()) {
 				// uncolonized or sea
 			} else if(other.get_rebel_faction_from_province_rebel_control()) {
-				cls = province_class::hostile_border;
-				break;
+				auto other_owner = other.get_nation_from_province_ownership();
+				if(other_owner == n || (other_owner && military::are_at_war(state, n, other_owner))) {
+					cls = province_class::hostile_border;
+					break;
+				}
 			} else if(military::are_at_war(state, n, n_controller)) {
 				cls = province_class::hostile_border;
 				break;
@@ -1905,40 +1994,38 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 		float const facing = field.hostile_at(c.loc);
 		float const cover = field.friendly_at(c.loc);
 
+		float const rem_need = need - committed;
+		float const send_w = std::min(c.weight, rem_need);
+
 		/*
 		Either what faces this army is beneath notice, or the sector survives its departure.
 		Frontline armies hold the line unless cover remains or threat is trivial;
 		rear reserve armies are exempt from holding the line.
 		*/
 		bool const overwhelm = facing <= token_pressure;
-		bool const cover_remains = std::max(0.0f, cover - c.weight) >= hold_ratio * facing;
+		bool const cover_remains = std::max(0.0f, cover - send_w) >= hold_ratio * facing;
 
 		if(is_frontline && !overwhelm && !cover_remains)
 			continue; // hold the line
 
-		/*
-		Try the march before charging anything for it. Candidates are admitted on
-		province::sorting_distance alone, which is a great-circle measure with no notion of
-		reachability, so an army across a strait or a closed border gets in and is picked
-		first for being nearest. Its pathfinding then fails, and set_army_path returns false
-		having touched nothing (military.cpp:10552). Charging the debit up front meant that
-		army's own province was recorded as that much lighter for the rest of the day while
-		not one regiment had actually been dispatched, and the garrison genuinely holding
-		that province then read the thinned cover and left too.
-		*/
-		if(!military::move_army_ai(state, c.a, p, n))
+		// Напрямую проверяем путь. Если пути нет — сразу переходим к следующему кандидату, не трогая армию
+		auto path = province::make_land_unit_path(state, c.loc, p, n, c.a);
+		if(path.empty())
 			continue;
 
-		// Then home again. This leg is allowed to fail: the army is committed either way, and
-		// the debit below names the province and weight outright rather than re-deriving them
-		// from whatever path survived, so the accounting does not depend on it.
-		military::move_army_ai(state, c.a, c.loc, n, false);
+		// Путь есть: отделяем требуемый вес
+		dcon::army_id army_to_send = split_army_for_weight(state, n, c.a, send_w);
+		float const actual_w = ai::army_pressure_weight(state, army_to_send);
+
+		// Назначаем построенный путь новой армии и добавляем обратный путь
+		military::set_army_path(state, army_to_send, path, n);
+		military::move_army_ai(state, army_to_send, c.loc, n, false);
 
 		// Each departure lowers the cover the next candidate sees, so a sector cannot be
 		// emptied by several armies each believing the others stayed.
-		ai::debit_friendly_at(state, field, c.loc, c.weight, n);
+		ai::debit_friendly_at(state, field, c.loc, actual_w, n);
 
-		committed += c.weight;
+		committed += actual_w;
 		++commits;
 	}
 }
@@ -2601,17 +2688,20 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 					continue; // Hold frontline sector
 				}
 
-				if(use_pressure && army_w > 0.0f) {
-					ai::debit_friendly_at(state, *attack_field, loc_fat.id, army_w, n);
+				dcon::army_id army_to_send = split_army_for_weight(state, n, ar.get_army().id, target_attack_force);
+				float const actual_w = use_pressure ? ai::army_pressure_weight(state, army_to_send) : 0.0f;
+
+				if(use_pressure && actual_w > 0.0f) {
+					ai::debit_friendly_at(state, *attack_field, loc_fat.id, actual_w, n);
 				}
 
 				if(ready_armies[m].p == central_province) {
-					ar.get_army().set_ai_province(potential_targets[i].location);
-					ar.get_army().set_ai_activity(uint8_t(army_activity::attacking));
+					state.world.army_set_ai_province(army_to_send, potential_targets[i].location);
+					state.world.army_set_ai_activity(army_to_send, uint8_t(army_activity::attacking));
 				} else if(auto path = province::make_safe_land_path(state, ready_armies[m].p, central_province, n); !path.empty()) {
-					military::set_army_path(state, ar.get_army(), path, n);
-					ar.get_army().set_ai_province(potential_targets[i].location);
-					ar.get_army().set_ai_activity(uint8_t(army_activity::attacking));
+					military::set_army_path(state, army_to_send, path, n);
+					state.world.army_set_ai_province(army_to_send, potential_targets[i].location);
+					state.world.army_set_ai_activity(army_to_send, uint8_t(army_activity::attacking));
 				}
 			}
 		}
@@ -3104,7 +3194,7 @@ void new_units_and_merging(sys::state& state) {
 
 			auto location = ar.get_location_from_army_location();
 
-			if(ar.get_black_flag() || army_activity(ar.get_ai_activity()) == army_activity::unspecified) {
+			if(ar.get_black_flag() || army_activity(ar.get_ai_activity()) == army_activity::unspecified || army_activity(ar.get_ai_activity()) == army_activity::on_guard) {
 				auto regs = ar.get_army_membership();
 				if(regs.begin() == regs.end()) {
 					// empty army -- cleanup will get it
