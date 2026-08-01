@@ -1,6 +1,6 @@
 mapmode_1;Ландшафт
 mapmode_2;Политический
-mapmode_3;Revoltrisk
+mapmode_3;Риск восстаний
 mapmode_4;Дипломатический
 mapmode_5;Регион
 mapmode_6;Инфраструктура
@@ -24,8 +24,8 @@ mapmode_23;Религия
 mapmode_24;Форты
 mapmode_25;Идеология
 mapmode_26;Доход
-mapmode_27;Сознание
-mapmode_28;Воинственность
+mapmode_27;Сознательность
+mapmode_28;Агрессивность
 mapmode_29;Грамотность
 mapmode_30;Занятость
 mapmode_31;Заводы
@@ -39,60 +39,60 @@ mapmode_38;Офицеры
 mapmode_39;Соотношение служащих и мастеров
 mapmode_40;Рейтинг жизни
 mapmode_41;Преступность
-mapmode_42;Ралли
+mapmode_42;Точки сбора
 mapmode_43;Рабочая сила
 mapmode_44;Мобилизация
-legend_min_mapmode_8;Низкий уровень администратора
+legend_min_mapmode_8;Низкая эффективн. админ.
 legend_min_mapmode_19;Нецивилизованный
 legend_min_mapmode_7;Неколонизированный
-legend_min_mapmode_21;Низкое напряжение
+legend_min_mapmode_21;Низкая напряженность
 legend_min_mapmode_18;Эмиграция
 legend_min_mapmode_12;Низкая плотность
 legend_min_mapmode_17;Низкий ранг
 legend_min_mapmode_20;Низкие отношения
 legend_min_mapmode_3;Низкий риск восстания
-legend_min_mapmode_11;Низкий выход РГО
-legend_min_mapmode_15;Низкий запас
+legend_min_mapmode_11;Низкая добыча РГО
+legend_min_mapmode_15;Низкий запас припасов
 legend_min_mapmode_26;Низкий доход
-legend_min_mapmode_27;Низкое сознание
-legend_min_mapmode_28;Низкая воинственность
+legend_min_mapmode_27;Низкая сознательность
+legend_min_mapmode_28;Низкая агрессивность
 legend_min_mapmode_29;Низкая грамотность
 legend_min_mapmode_30;Низкая занятость
 legend_min_mapmode_33;Низкий рост
-legend_min_mapmode_35;Низкая удовлетворенность
-legend_min_mapmode_36;Низкая удовлетворенность
-legend_min_mapmode_37;Низкая удовлетворенность
-legend_min_mapmode_38;Низкая сумма
-legend_min_mapmode_39;Плохое соотношение CTC
+legend_min_mapmode_35;Низкое удовлетворение
+legend_min_mapmode_36;Низкое удовлетворение
+legend_min_mapmode_37;Низкое удовлетворение
+legend_min_mapmode_38;Малое количество
+legend_min_mapmode_39;Плохое соотношение
 legend_min_mapmode_40;Низкий рейтинг жизни
 legend_min_mapmode_44;Малое количество полков
-legend_max_mapmode_8;Высший администратор
+legend_max_mapmode_8;Высокая эффективн. админ.
 legend_max_mapmode_19;Цивилизованный
 legend_max_mapmode_7;Колонизуемый
-legend_max_mapmode_21;Высокое напряжение
+legend_max_mapmode_21;Высокая напряженность
 legend_max_mapmode_18;Иммиграция
 legend_max_mapmode_12;Высокая плотность
 legend_max_mapmode_17;Высокий ранг
 legend_max_mapmode_20;Высокие отношения
 legend_max_mapmode_3;Высокий риск восстания
-legend_max_mapmode_11;Высокий выход РГО
-legend_max_mapmode_15;Высокий запас
+legend_max_mapmode_11;Высокая добыча РГО
+legend_max_mapmode_15;Высокий запас припасов
 legend_max_mapmode_26;Высокий доход
-legend_max_mapmode_27;Высокое сознание
-legend_max_mapmode_28;Высокая воинственность
+legend_max_mapmode_27;Высокая сознательность
+legend_max_mapmode_28;Высокая агрессивность
 legend_max_mapmode_29;Высокая грамотность
 legend_max_mapmode_30;Высокая занятость
 legend_max_mapmode_33;Высокий рост
-legend_max_mapmode_35;Высокая удовлетворенность
-legend_max_mapmode_36;Высокая удовлетворенность
-legend_max_mapmode_37;Высокая удовлетворенность
+legend_max_mapmode_35;Высокое удовлетворение
+legend_max_mapmode_36;Высокое удовлетворение
+legend_max_mapmode_37;Высокое удовлетворение
 legend_max_mapmode_38;Большое количество
-legend_max_mapmode_39;Большой коэффициент CTC
+legend_max_mapmode_39;Хорошее соотношение
 legend_max_mapmode_40;Высокий рейтинг жизни
-legend_max_mapmode_44;Высокое количество полков
+legend_max_mapmode_44;Большое количество полков
 mapmode_tooltip_34;Игрок: $x$
 mapmode_tooltip_34_you_sp;Это вы!
-mapmode_tooltip_34_you;Игрок: $x$ (Это ты!)
+mapmode_tooltip_34_you;Игрок: $x$ (Это вы!)
 mapmode_tooltip_34_ai;Управляется ИИ
 mapmode_tooltip_35;Жизненные потребности удовлетворены: $x$
 mapmode_tooltip_36;Удовлетворение повседневных потребностей: $x$
@@ -100,9 +100,9 @@ mapmode_tooltip_37;Потребности в роскоши удовлетвор
 mapmode_tooltip_38;Всего офицеров: $x$ ($y$ населения, $value$ оптимально)
 mapmode_tooltip_39;Соотношение клерков и мастеров: $fraction$ ($x$/$y$), $value$ оптимально
 mapmode_tooltip_40;Рейтинг жизни: $x$
-mapmode_tooltip_41;Преступление: $x$
-mapmode_tooltip_42_1;Наземная точка сбора
-mapmode_tooltip_42_2;Точка сбора ВМФ
+mapmode_tooltip_41;Преступность: $x$
+mapmode_tooltip_42_1;Сухопутная точка сбора
+mapmode_tooltip_42_2;Морская точка сбора
 mapmode_tooltip_43;Распределение рабочей силы:
 mapmode_tooltip_44;Мобилизованных полков из этой провинции: $x$ (из возможных $y$)
 mapmode_tooltip_44_2;Нет возможных полков
@@ -114,12 +114,12 @@ mapmode_tooltip_religion_majorities;Религии в ?Y$PROV$?W:
 mapmode_tooltip_dominant_issues;Проблемы в ?Y$PROV$?W:
 mapmode_tooltip_total_income;Общий дневной доход:
 mapmode_tooltip_dominant_ideology;Идеологии в ?Y$PROV$?W:
-mapmode_tooltip_con_average;Среднее сознание: ?Y$val$?W
+mapmode_tooltip_con_average;Средняя сознательность: ?Y$val$?W
 mapmode_tooltip_total_employment;Занятость:
 mapmode_tooltip_literacy_rate;Грамотность:
 mapmode_tooltip_factory_count;Заводы в ?Y$state$?W:
 mapmode_tooltip_fort_level;Уровень форта
-mapmode_tooltip_fort_being_built;Здесь строится уровень форта.
+mapmode_tooltip_fort_being_built;Здесь строится форт.
 mapmode_tooltip_can_build_fort;Здесь можно построить новый уровень форта.
 mapmode_tooltip_population_change;Месячное изменение численности населения:
 mapmode_tooltip_rebels_amount;Повстанцы активны в провинции:
@@ -144,18 +144,18 @@ aml_dip_s8;Неосновной
 aml_dip_s9;Объединенное ядро
 aml_rr_s1;Уровень 0
 aml_rr_s2;Уровень 6
-aml_rr_s3;Обновление
+aml_rr_s3;Улучшение
 aml_rr_s4;Максимальный уровень
 aml_rr_s5;Заблокировано
 aml_nav_s1;Нет базы
 aml_nav_s2;Максимальный уровень
-aml_nav_s3;Обновление
-aml_nav_s4;Обновляемый
-aml_nav_s5;Конструируемый
-aml_rank_s1;Отлично
-aml_rank_s2;Вторичный
-aml_rank_s3;Civ
-aml_rank_s4;Unciv
+aml_nav_s3;Улучшение
+aml_nav_s4;Улучшаемый
+aml_nav_s5;Строящийся
+aml_rank_s1;Великая
+aml_rank_s2;Колониальная
+aml_rank_s3;Цивилизованная
+aml_rank_s4;Нецивилизованная
 aml_rec_s1;Доступно
 aml_rec_s2;Все использовано
 aml_rec_s3;Нет
