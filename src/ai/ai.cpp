@@ -1705,7 +1705,7 @@ bool army_ready_for_battle(sys::state& state, dcon::nation_id n, dcon::army_id a
 		return false;
 	}
 
-	return state.world.regiment_get_org(sample_reg) > 0.7f;
+	return state.world.regiment_get_org(sample_reg) >= 0.5f;
 }
 
 /*
@@ -1858,30 +1858,6 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 	if(need <= 0.0f)
 		return;
 
-	/*
-	How much more this province can actually feed. Need alone answers "how much would win the
-	battle" and has no upper bound: on a large enough fight it asks for more than the nation
-	owns, and every army in reach walks into one tile. Observed as three 30k armies stacked in
-	a province that supplies one, which is also a tile an opponent can encircle in a single
-	move.
-
-	supply_limit_in_province is in the same units as army weight -- relative_attrition_amount
-	subtracts one from the other directly (military.cpp:6685) -- so this is a plain comparison.
-	Only our own weight is counted: enemy armies standing in the province do drive the game's
-	attrition, but charging their weight against our capacity would mean the AI stops
-	reinforcing exactly the battles it is losing.
-
-	Note that overstacking is nearly free in the current attrition model, which clamps to the
-	province's max_attrition modifier -- zero on ordinary terrain. So nothing in the simulation
-	punishes the pile; the cap has to be explicit.
-	*/
-	float const supply_tolerance = std::max(1.0f, state.defines.alice_ai_battle_supply_tolerance);
-	float const capacity = float(military::supply_limit_in_province(state, n, p)) * supply_tolerance
-		- friendly_engaged
-		- inbound;
-
-	if(capacity <= 0.0f)
-		return;
 
 	// Nearest first: sorting_distance is the negated cosine of the arc, so smaller is
 	// closer. The tie-break on id keeps the order total, which every client depends on.
@@ -1909,37 +1885,30 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 		if(state.world.army_get_location_from_army_location(c.a) != c.loc)
 			continue;
 
-		// Tested per army rather than against the running total, because armies move whole:
-		// letting one in on the grounds that some capacity remains is how a province that
-		// fits one army ends up holding three. A candidate too large for what is left is
-		// skipped rather than breaking the loop, so a smaller one behind it can still go.
-		if(committed + c.weight > capacity)
-			continue;
+		bool is_frontline = false;
+		auto fat_c_loc = dcon::fatten(state.world, c.loc);
+		for(auto padj : fat_c_loc.get_province_adjacency()) {
+			auto other = padj.get_connected_provinces(0) == fat_c_loc ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
+			auto n_controller = other.get_nation_from_province_control();
+
+			if(other.get_rebel_faction_from_province_rebel_control() || (n_controller && military::are_at_war(state, n, n_controller))) {
+				is_frontline = true;
+				break;
+			}
+		}
 
 		float const facing = field.hostile_at(c.loc);
 		float const cover = field.friendly_at(c.loc);
 
 		/*
 		Either what faces this army is beneath notice, or the sector survives its departure.
-
-		A third test used to sit in the first clause: cover >= overwhelm_ratio * facing, meant
-		to read as "the enemy here is hopelessly outmatched, so leaving costs nothing". It was
-		circular and had to go. cover is the friendly pressure at this province, and the field
-		seeds every army at its own location, so the departing army's weight is the bulk of the
-		number being used to justify its departure -- "I am strong here, therefore I may leave",
-		where the strength is precisely what leaves. The bigger the army, the more readily it
-		emptied its own province: 50 weight facing 4 cleared 10 * 4 = 40 and marched off, and
-		the province it had been holding was left at zero against an enemy still standing next
-		to it. Observed in a 1916 save as a front stripped bare rather than merely thinned.
-
-		Rewriting it to measure what remains rather than what is present would have made it
-		strictly stronger than cover_remains below (a ratio of 10 against 0.75) and therefore
-		never the deciding test, so the clause is gone rather than repaired.
+		Frontline armies hold the line unless cover remains or threat is trivial;
+		rear reserve armies are exempt from holding the line.
 		*/
 		bool const overwhelm = facing <= token_pressure;
 		bool const cover_remains = std::max(0.0f, cover - c.weight) >= hold_ratio * facing;
 
-		if(!overwhelm && !cover_remains)
+		if(is_frontline && !overwhelm && !cover_remains)
 			continue; // hold the line
 
 		/*
@@ -2308,6 +2277,11 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		float str = 0.0f;
 	};
 	std::vector<a_str> ready_armies;
+	bool const use_pressure = ai::pressure_enabled(state);
+	ai::pressure_field* attack_field = nullptr;
+	if(use_pressure) {
+		attack_field = &ai::cached_tactical_field(state, n);
+	}
 	ready_armies.reserve(state.world.province_size());
 
 	int32_t ready_count = 0;
@@ -2472,6 +2446,7 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		int32_t k = int32_t(ready_armies.size());
 		for(; k-- > 0 && a_force_str <= target_attack_force;) {
 			if(ready_armies[k].str == 0.0f) {
+				float extracted_weight = 0.0f;
 				for(auto ar : state.world.province_get_army_location(ready_armies[k].p)) {
 					if(ar.get_army().get_battle_from_army_battle_participation()
 						|| n != ar.get_army().get_controller_from_army_control()
@@ -2486,18 +2461,51 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 
 					// Do not strip the frontline on other sectors if there is an active threat in front of us
 					auto loc_fat = ar.get_army().get_location_from_army_location();
-					bool has_enemy_in_front = false;
-					for(auto padj : loc_fat.get_province_adjacency()) {
-						auto other = padj.get_connected_provinces(0) == loc_fat ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
-						if(other.id != potential_targets[i].location && military::province_has_enemy_army(state, other.id, n)) {
-							has_enemy_in_front = true;
-							break;
+					bool should_hold_frontline = false;
+					float const army_w = use_pressure ? ai::army_pressure_weight(state, ar.get_army().id) : 0.0f;
+
+					if(use_pressure) {
+						bool is_frontline = false;
+						for(auto padj : loc_fat.get_province_adjacency()) {
+							auto other = padj.get_connected_provinces(0) == loc_fat ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
+							if(other.id != potential_targets[i].location) {
+								auto n_controller = other.get_nation_from_province_control();
+								if(other.get_rebel_faction_from_province_rebel_control() || (n_controller && military::are_at_war(state, n, n_controller))) {
+									is_frontline = true;
+									break;
+								}
+							}
+						}
+
+						if(is_frontline) {
+							float const facing = attack_field->hostile_at(loc_fat.id);
+							float const cover = attack_field->friendly_at(loc_fat.id);
+
+							float const hold_ratio = std::max(0.0f, state.defines.alice_ai_hold_ratio);
+							float const token_pressure = std::max(0.0f, state.defines.alice_ai_token_pressure);
+
+							bool const overwhelm = facing <= token_pressure;
+							// Deduct extracted_weight so multiple armies in the same province don't overestimate available cover
+							bool const cover_remains = std::max(0.0f, cover - extracted_weight - army_w) >= hold_ratio * facing;
+
+							if(!overwhelm && !cover_remains) {
+								should_hold_frontline = true;
+							}
+						}
+					} else {
+						for(auto padj : loc_fat.get_province_adjacency()) {
+							auto other = padj.get_connected_provinces(0) == loc_fat ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
+							if(other.id != potential_targets[i].location && military::province_has_enemy_army(state, other.id, n)) {
+								should_hold_frontline = true;
+								break;
+							}
 						}
 					}
 
-					if(has_enemy_in_front)
+					if(should_hold_frontline)
 						continue; // Hold frontline sector instead of marching away on other attacks
 
+					extracted_weight += army_w;
 					ready_armies[k].str += estimate_army_offensive_strength(state, ar.get_army());
 				}
 				ready_armies[k].str += 0.00001f;
@@ -2544,17 +2552,52 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 
 				// DOUBLE-CHECK: Do not strip frontline on command issuance if threat was detected
 				auto loc_fat = ar.get_army().get_location_from_army_location();
-				bool has_enemy_in_front = false;
-				for(auto padj : loc_fat.get_province_adjacency()) {
-					auto other = padj.get_connected_provinces(0) == loc_fat ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
-					if(other.id != potential_targets[i].location && military::province_has_enemy_army(state, other.id, n)) {
-						has_enemy_in_front = true;
-						break;
+				bool should_hold_frontline = false;
+				float const army_w = use_pressure ? ai::army_pressure_weight(state, ar.get_army().id) : 0.0f;
+
+				if(use_pressure) {
+					bool is_frontline = false;
+					for(auto padj : loc_fat.get_province_adjacency()) {
+						auto other = padj.get_connected_provinces(0) == loc_fat ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
+						if(other.id != potential_targets[i].location) {
+							auto n_controller = other.get_nation_from_province_control();
+							if(other.get_rebel_faction_from_province_rebel_control() || (n_controller && military::are_at_war(state, n, n_controller))) {
+								is_frontline = true;
+								break;
+							}
+						}
+					}
+
+					if(is_frontline) {
+						float const facing = attack_field->hostile_at(loc_fat.id);
+						float const cover = attack_field->friendly_at(loc_fat.id);
+
+						float const hold_ratio = std::max(0.0f, state.defines.alice_ai_hold_ratio);
+						float const token_pressure = std::max(0.0f, state.defines.alice_ai_token_pressure);
+
+						bool const overwhelm = facing <= token_pressure;
+						bool const cover_remains = std::max(0.0f, cover - army_w) >= hold_ratio * facing;
+
+						if(!overwhelm && !cover_remains) {
+							should_hold_frontline = true;
+						}
+					}
+				} else {
+					for(auto padj : loc_fat.get_province_adjacency()) {
+						auto other = padj.get_connected_provinces(0) == loc_fat ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
+						if(other.id != potential_targets[i].location && military::province_has_enemy_army(state, other.id, n)) {
+							should_hold_frontline = true;
+							break;
+						}
 					}
 				}
 
-				if(has_enemy_in_front) {
+				if(should_hold_frontline) {
 					continue; // Hold frontline sector
+				}
+
+				if(use_pressure && army_w > 0.0f) {
+					ai::debit_friendly_at(state, *attack_field, loc_fat.id, army_w, n);
 				}
 
 				if(ready_armies[m].p == central_province) {
