@@ -159,3 +159,5 @@ aml_rank_s4;Unciv
 aml_rec_s1;Доступно
 aml_rec_s2;Все использовано
 aml_rec_s3;Нет
+mapmode_tooltip_34_no_ai;Не под управлением ИИ
+mapmode_tooltip_factory_size;Всего уровней:

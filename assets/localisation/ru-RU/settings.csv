@@ -61,3 +61,10 @@ auto_save_1;Ежедневно
 auto_save_2;Ежемесячно
 auto_save_3;Ежегодно
 auto_save_0;Нет
+map_projection_globe_stereographic;Стереографическая
+map_label_4;Сферическая
+graphics_details_label;Графика
+graphics_details_0;Низкая
+graphics_details_1;Классическая
+graphics_details_2;Современная
+disband_confirmation_label;Подтверждение расформирования отрядов

@@ -1370,3 +1370,673 @@ alice_budget_debt;Долг
 alice_budget_total_debt;Итого:
 alice_budget_max_debt;Макс:
 alice_budget_debt_enable;Включить долг
+ui_element_name;Название: ?Y$x$?!
+ui_element_position;Позиция: X = ?Y$x$?! Y = ?Y$y$?!
+ui_element_size;Размер: X = ?Y$x$?! Y = ?Y$y$?!
+PROVINCEVIEW_GOODSINCOME;Продано вчера ?Y$x$?W ?Y$GOODS$?W за ?Y$VALUE$?W
+currently;(сейчас: ?Y$x$?!)
+remove_x_core;Удалить ядро ?Y$adj$?W
+remove_core_from;Удалить ядро из
+giving_modifier;Это даст следующий модификатор:
+pop_project;Проект ПОПов
+state_project;Строительство региона
+alice_technology_leadership_points;Очки лидерства:
+build_factory;Построить фабрику
+upgrade_factory;Расширить фабрику
+build_province_building;Построить здание в провинции
+resource_potential;Ресурсный потенциал
+available_potential;Местные ресурсы позволяют построить ?Y$val$?W уровней зданий, производящих $what$
+factory_level;Уровень фабрики ?Y$val$
+employment_type_no_education;Тип занятости: ?YБез образования?W
+employment_type_basic_education;Тип занятости: ?YНачальное образование?W
+employment_type_high_education_and_accepted;Тип занятости: ?YВысшее образование и принятая культура?W
+employment_type_high_education;Тип занятости: ?YВысшее образование?W
+employment_type_guild_education;Тип занятости: ?YЦеховое образование?W
+alice_trade_attractiveness;Привлекательность торгового маршрута
+trade_center;Торговый центр
+trade_center_desc;Торговые центры управляют торговлей внутри рынка и между рынками штатов, закупая товары до желаемого запаса и продавая излишки соседям.
+trade_center_employment;Сотрудники торгового центра: ?Y$value$?W
+trade_centre_max_throughput;Макс. пропускная способность: ?Y$value$?W
+local_admin;Местная администрация
+capital_admin;Столичная администрация
+local_admin_spending;Ориентировочная стоимость: ?Y$value$?W
+admin_employment;Administration Employees: ?Y$value$?W
+target_employment;Целевая занятость: ?Y$value$?W
+employment_satisfaction;Employment satisfaction: ?Y$value$?W
+local_admin_efficiency;Local administrations are ?Y$value$?W less efficient than the capital one.
+admin_production;This administration produces ?Y$value$?! control that spreads to neighbouring provinces.
+province_control_scale;Control points available: ?Y$value$?!
+province_control_scale_trade_incoming;?G+$value$ control received through trade from $prov$?!
+province_control_scale_trade_outgoing;?R-$value$ control transferred through trade to $prov$?!
+province_control_scale_from_state_capital;?G+$value$ control received from state capital of $prov$?!
+province_control_scale_to_state_capital;?R-$value$ control transferred to state province of $prov$?!
+province_control_scale_adjacency_received;?G+$value$ control received from adjacency with $prov$?!
+province_control_scale_adjacency_sent;?R-$value$ control transferred to adjacent $prov$?!
+province_control_change;Predicted control ratio change: ?Y$value$?!
+province_control_decay;Predicted control points decay: ?Y$value$?!
+admin_cost_of_province;Стоимость of province administration in control points: ?Y$value$?!
+admin_cost_of_province_area;From area of: ?Y$value$?!
+admin_cost_of_province_population;From population of: ?Y$value$?!
+admin_cost_of_province_coastal;?G-$value$ because of coastline?!
+admin_cost_of_province_river;?G-$value$ because of a major river?!
+tax_collection_rate;Tax collection rate: ?Y$value$?!
+tax_collection_rate_capital_base;Base in the capital: ?Y$value$?!
+tax_collection_rate_control;From control: ?Y$value$?!
+tax_collection_rate_efficiency;Modified by ?Y$value$?! tax efficiency
+poor_potential;Potential poor taxes: ?Y$value$?W
+mid_potential;Potential middle taxes: ?Y$value$?W
+rich_potential;Potential rich taxes: ?Y$value$?W
+poor_taxes;Actual poor taxes: ?Y$value$?W
+mid_taxes;Actual middle taxes: ?Y$value$?W
+rich_taxes;Actual rich taxes: ?Y$value$?W
+colonial_crisis;a colonial crisis
+potentials;Potentials
+factory_condition_8;Factory type is allowed in colonial states
+factory_build_condition_11;State has available resource potentials
+factory_upgrade_condition_11;State has available resource potentials
+factory_employment;Factory employees: ?Y$val$
+factory_stats_7;Economy of scale throughput bonus: ?G+$val$?!
+factory_stats_wage_no_education;Wage paid to unqualified labourers
+factory_stats_wage_basic_education;Wage paid to educated craftsmen
+factory_stats_wage_high_education;Wage paid to experts
+factory_money_flow_sum;?Y$value$?W is predicted profit (income minus expenses)
+factory_money_flow_sales;?G$value$?W is predicted income from sales
+factory_money_flow_primary_inputs;?R$value$?W is predicted spending on inputs
+factory_money_flow_secondary_inputs;?R$value$?W is predicted spending on efficiency inputs
+factory_money_flow_expansion;?R$value$?W is predicted spending on factory expansion
+factory_money_flow_maintenance;?R$value$?W is predicted spending on factory maintenance
+factory_money_flow_wages;?R$value$?W is predicted spending on workers wages
+factory_expansion_rate;We predict that factory will be expanded to accomodate ?Y$value$?W additional workers
+factory_hiring_rate_unqualified;We predict that factory will attempt to ?Ghire?W ?Y$value$?W more people as ?Yunskilled workers?W. (Current target: ?Y$x$?W)
+factory_hiring_rate_primary;We predict that factory will attempt to ?Ghire?W ?Y$value$?W more people as ?Ycraftsmen?W. (Current target: ?Y$x$?W)
+factory_hiring_rate_secondary;We predict that factory will attempt to ?Ghire?W ?Y$value$?W more people as ?Ymanagers and engineers?W. (Current target: ?Y$x$?W)
+factory_firing_rate_unqualified;We predict that factory will attempt to ?Rfire?W ?Y$value$?W ?Yunskilled workers?W. (Current target: ?Y$x$?W)
+factory_firing_rate_primary;We predict that factory will attempt to ?Rfire?W ?Y$value$?W ?Ycraftsmen?W. (Current target: ?Y$x$?W)
+factory_firing_rate_secondary;We predict that factory will attempt to ?Rfire?W ?Y$value$?W ?Ymanagers and engineers?W. (Current target: ?Y$x$?W)
+factory_hired_unqualified;Factory hired ?Y$value$?W ?Yunskilled workers?W to do simple manual tasks. An ?Yunskilled worker?W provides only ?R$x$?W of a ?Ycraftsman?W output.
+factory_hired_primary;Factory hired ?Y$value$?W ?Ycraftsmen?W.
+factory_hired_secondary;Factory hired ?Y$value$?W ?Ymanagers and engineers?W. They multiply factory output by ?G$x$?W.
+factory_throughput_explanation;Throughput is a measure of raw power of a factory. It's measured in ?Gproduction units?W. Throughput drives both consumption of inputs and production of output. The only source of throughput are ?Gemployment units?W generated by ?Yunskilled workers?W and ?Ycraftsmen?W. Technology advancements can increase amount of ?Gproduction units?W generated per worker. Current throughput modifier is ?G$val$?W. Thus, current ?Y$y$?W employment units generate ?Y$x$?W (?G$val$?W of ?Y$y$?W) production units. Essentially, increase of throughput allows capitalists to employ less workers for the same total wage.
+factory_throughput_base;In Project Alice factories have to invest into efficiency goods to access national multipliers from tech. Current investments provide ?G$val$?W base multiplier to throughput.
+factory_throughput_modifiers;Local province conditions provide a throughput multiplier equal to ?G$val$?W
+factory_throughput_subsistence;Local urban housing conditions and "big city" psychological effects modify throughput with ?R$val$?W
+factory_input_multiplier_explanation;Затраты multiplier is the strongest industry-related multiplier as it doesn't suffer from diminishing returns. On the opposite, the more you stack a source of this multiplier, the stronger it becomes. Current multiplier is equal to ?G$val$?W.
+factory_input_multiplier_competition;Local competition between capitalists encourages factories to be more efficient and consume only ?G$val$?W of required inputs.
+factory_input_multiplier_scale;Smaller factories have to be lean and avoid waste to survive, current factory has ?G$val$?W multiplier due to this reason.
+factory_input_multiplier_specialisation;Scientific, political and legal priorities of private and national agents aligned to provide this industry with ?G$val$?W input multiplier.
+factory_input_multiplier_modifiers;Various technologies and inventions allow this factory to enjoy additional ?G$val$?W input multiplier.
+factory_output_multiplier_explanation;Output multiplier is a strong multiplier but suffers from diminishing returns. Currently this factory has ?G$val$?W output multiplier.
+factory_output_multiplier_lack_of_inputs;Due to lack of inputs, output of this factory is multiplied by ?R$val$?W.
+factory_output_multiplier_efficiency_inputs;To achieve full output, factory has to consume special efficiency inputs. Currently it suffers ?R$val$?W multiplier due to inability to do so.
+factory_output_multiplier_secondary_workers;Output multipliers from technology are not free in Alice. Employed ?Ymanagers and engineers?W are responsible for enforcement of efficient organisational practices, implementation of new inventions and maintenance of advanced machines. Currently they provide the factory with ?G$val$?W output multiplier. 
+factory_output_multiplier_modifiers;Various technologies and inventions provide additional ?Y$val$?W multiplier.
+factory_historical_profitability_unqualified;Historically, we employed ?Y$val$?W unskilled workers during high profitability.
+factory_historical_unprofitability_unqualified;Historically, we employed  ?Y$val$?W unskilled workers  during low profitability.
+factory_historical_profitability_primary;Historically, we employed  ?Y$val$?W skilled workers during high profitability.
+factory_historical_unprofitability_primary;Historically, we employed ?Y$val$?W skilled workers during low profitability.
+factory_historical_profitability_secondary;Historically, we employed ?Y$val$?W expert workers during high profitability.
+factory_historical_unprofitability_secondary;Historically, we employed  ?Y$val$?W expert workers during low profitability.
+factory_total_size;Total factories: ?Y$val$?!
+factory_consumer_count;Consumer factories: ?Y$val$?!
+factory_heavy_count;Heavy industry factories: ?Y$val$?!
+factory_military_count;Military factories: ?Y$val$?!
+factory_processing_count;Processing factories: ?Y$val$?!
+factory_industrial_and_consumer_count;Industrial and consumer goods factories: ?Y$val$?!
+pop_migration_bureaucracy;Bureaucracy has to move around in order to administer the land: $x$
+pop_migration_culture;Population prefers to migrate to the core land of their culture: $x$
+pop_prom_housing_multiplier;Lack of urban housing hinders pop promotion and multiplies chance by $val$
+pop_literacy_spending;Pop is planning to spend ?Y$val$?W on education.
+pop_literacy_spending_actually_spent;Local education demand satisfaction: ?Y$val$?W.
+pop_literacy_spending_required;Max education spendings: ?Y$val$?W.
+pop_literacy_spending_public;?Y$val$?W of expenses will be covered by public education budget.
+pop_literacy_spending_ratio;Satisfied ratio: ?Y$x$?W.
+pop_literacy_spending_result_success;As ?Y$x$?W is higher than ?Y$y$?W, literacy was increased by ?Y$val$?W
+pop_literacy_spending_result_failure;As ?Y$x$?W is lower than ?Y$y$?W, literacy was decreased by ?Y$val$?W
+pop_budget_explanation_header;Pop had accumulated ?Y$val$?W in personal assets.
+pop_budget_explanation_life_needs;Pop will spend ?Y$x$?W (out of desired ?Y$y$?W) on life needs. Ratio: ?Y$val$?W
+pop_budget_explanation_subsistence;Additionally, pop forages ?Y$x$?W of desired goods. Total satisfaction is ?Y$y$?W
+pop_budget_explanation_everyday_needs;Pop will spend ?Y$x$?W (out of desired ?Y$y$?W) on everyday needs. Ratio: ?Y$val$?W
+pop_budget_explanation_luxury_needs;Pop will spend ?Y$x$?W (out of desired ?Y$y$?W) on luxury needs. Ratio: ?Y$val$?W
+pop_budget_explanation_education;Pop will spend ?Y$x$?W on education needs. See details in education tooltip.
+pop_budget_explanation_investments;Pop will spend ?Y$x$?W on investments.
+pop_budget_explanation_banks;Pop will provide ?Y$x$?W to national bank.
+pop_growth_12;Lastly, multiply the ?Ystarvation factor?W (?Y$x$?W) and ?Ypenalty scale?W (?Y$y$?W) to get the net pop growth penalty (?Y$val$?W), which is then added to the rest of the modifiers
+commodity_consumption_header;Population consumption: life/everyday/luxury needs
+commodity_consumed_by;Consumed by
+commodity_production_header;In factory production chains: input/output
+national_modifiers;National modifiers
+state_transfer_explain_7;Must be in a subject-overlord relationship
+call_ally_explain_6;Spherelord is not in the war on the enemy side OR sphere war restrictions are turned ВЫКЛ
+ask_access_explain_5;Nation is your subject
+cancel_given_access_explain_2;You are not a subject of this nation
+ask_free_trade_agreement;Trade agreement
+revoke_trade_rights;Revoke trade rights
+msg_trade_rights_revoked;Nation ?Y$y$?W has revoked free trade rights of ?Y$x$?! in their country.
+trade_rights_desc;Trade rights or unequal treaties give the other party preferential treatment in trade ignoring tariffs of our country. Once imposed, cannot be revoked for ?Y$x$ years.
+revoke_trade_rights_explain_1;Enough time has passed since trade rights were imposed
+revoke_trade_rights_explain_2;We have the rights to revoke the agreement
+free_trade_desc;If another party agrees, we'll enter into trade agreement removing all tariffs between our markets and their markets (spheres & subjects) for ?Y$x$ years?W.
+free_trade_explain_1;Our traders won't pay their tariffs until ?G$date$?!
+free_trade_explain_2;Their traders won't pay our tariffs until ?R$date$?!
+free_trade_explain_3;We are embargoeing them
+free_trade_explain_4;They are embargoing us
+free_trade_explain_5;Target is not a subject OR Target is a our subject
+free_trade_explain_6;We aren't in a sphere
+free_trade_explain_7;Target isn't in a sphere OR Target is in our sphere
+free_trade_explain_8;$x$ and their spheres&subjects ?Ghas free trade with?! $y$ and their spheres&subjects.
+issue_embargo;Issue Embargo
+lift_embargo;Lift Embargo
+embargo_desc;Embargo prevents all trade between our markets and their markets (spheres & subjects). Embargoes are applied automatically to enemies during war.
+embargo_explain_1;$x$ and their spheres&subjects ?Gembargoes?! $y$ and their spheres&subjects.
+embargo_explain_2;$x$ and their spheres&subjects ?Rembargoes?! $y$ and their spheres&subjects.
+embargo_explain_3;We don't have trade rights in their country
+embargo_explain_4;They don't have trade rights in our country
+embargo_explain_5;We aren't in a sphere
+embargo_explain_6;They aren't in a sphere
+embargo_explain_7;The target isn't in our sphere
+war_explain_5;Does not have units stationed inside this nation
+war_explain_6;Does not have units stationed inside this nation's overlord
+war_explain_7;Is not allied to target
+war_explain_8;Is not allied to target's overlord
+war_explain_9;Target is not our spherelord AND is not allied to our spherelord AND sphere war restrictions are turned ВКЛ
+war_explain_10;Target is not our sphereling
+province_victory_points;Victory points represent relative worth of the province to other provinces in the country when calculating occupation score in wars.
+province_victory_points_base;?G+1 point base?W
+province_victory_points_nb;?G+$X$ points for naval base level?W
+province_victory_points_fcount;?G+$X$ points for factories?W
+province_victory_points_fortsize;?G+$X$ points for fort level?W
+province_victory_points_mainlandcore;?Gx2 for non-overseas core?W
+province_victory_points_capital;?Gx3 for nation capital?W
+alice_national_identity_select_title;Select national identity
+alice_no_start_game_player_loading;Cannot start the game while players are loading
+alice_no_start_game_invalid_nations;Cannot start the game while players are on non-existant nations
+delete_factory;Delete Factory
+change_state_name_to;change state name to $text$
+move_to_siege;Move to Siege order (hotkey: V)
+move_to_siege_desc;With Move to Siege order army moves to the next province only after full occupation of the current one.
+strategic_redeployment;Strategic redeployment (hotkey: B)
+strategic_redeployment_desc;Strategic redeployment allows to move troops at increased speed, but with zero organisation.
+pursue_to_engage;Pursue and engage an army (hotkey: N)
+pursue_to_engage_desc;Army will pursue and engage an army from the target province.
+religion_nation_modifier;Majority of the population professes ?Y$NAME$?!
+when;When:
+alice_has_possible_units;Some unit can be built.
+CANBUILD_FORCEDISARM;Nation has not been disarmed.
+alice_loan_size_mod;Max loan free money modifier: ?G+$x$
+capitalists_savings_ratio;Capitalists saving ratio: ?G$x$?!
+middle_class_savings_ratio;Middle class saving ratio: ?G$x$?!
+farmers_savings_ratio;Farmers saving ratio: ?G$x$?!
+landowners_savings_ratio;Landowners saving ratio: ?G$x$?!
+capitalists_investment_ratio;Capitalists investment ratio: ?G$x$?!
+middle_class_investment_ratio;Middle class investment ratio: ?G$x$?!
+farmers_investment_ratio;Farmers investment ratio: ?G$x$?!
+landowners_investment_ratio;Landowners investment ratio: ?G$x$?!
+alice_reserve_reg_count;$x$ currently have ?Y$y$?W reserve brigades in the battle.
+alice_reinforce_battle_mod_top;?Y$x$?W reserve brigades affected by the following reinforcement modifiers:
+alice_reinforce_battle_only_reserve;Only ?Yreserves?W in a battle can be reinforced.
+alice_reinforce_battle_spending_modifier;Average army supply fufillment: ?Yx$x$.?W
+alice_reinforce_battle_location_modifier;Average location modifier: ?Yx$x$.?W
+alice_reinforce_battle_national_modifier;Average national modifiers&techs: ?Yx$x$.?W
+alice_reinforce_rate_battle_attacker;The attackers can reinforce up to $x$ soldiers per month.
+alice_reinforce_rate_battle_attacker_none;The attackers are currently getting no reinforcements.
+alice_reinforce_rate_battle_defender;The defenders can reinforce up to $x$ soldiers per month.
+alice_reinforce_rate_battle_defender_none;The defenders are currently getting no reinforcements.
+production_refit_factory_tooltip_1;Refit ?Y$what$?! to a different production line
+production_refit_factory_tooltip_2;Refit ?Y$what$?! into ?Y$name$?!
+production_refit_factory_tooltip_3;Ruling party allows building factories
+production_refit_factory_tooltip_4;Old and new types have the same inputs or the same outputs
+factory_refit;Refit factory
+factory_refit_cost;$what$: ?Y$val$?! (?Y$value$?!)
+factory_refit_cost_total;Total: ?Y$value$?!
+alice_building_id;Building ID: ?Y$val$?!
+alice_province_id;Province ID: ?Y$val$?!
+alice_construction_cost;Construction cost:
+alice_building_modifier;Building gives the following effect:
+alice_new_building_modifier;Building will give the following effect:
+alice_building_level;Building Level: ?Y$val$?W
+alice_building_conditions;To build, the following must be true:
+alice_factory_construction_explain_3;Purchased goods worth: ?Y$x$?W
+alice_factory_construction_explain_4;Total estimated price: ?Y$x$?W
+alice_factory_construction_explain_5;Progress: ?Y$x$?W
+factory_tier;Tier: ?Y$x$?W
+province_has_workers;Province has any workforce.
+province_has_available_workers;Province has unemployed workforce.
+nation_is_factory_type_active;Necessary technology has been researched.
+nation_is_factory_type_colonies;Target factory type can be built in colonies.
+payback_time;Payback time: ?Y$x$?!
+output_value;Output value: ?Y$x$?!
+input_value;Input value: ?Y$x$?!
+profitability;Profitability: ?Y$x$?!
+alice_lobby_back_player_loading;You may not go back to the lobby while players are loading
+provid;Content Province ID
+state_id;State Instance ID
+state_definition;State Definition
+state_definition_id;State Definition ID
+nation_id;Alice Nation ID
+province_colonisation_temperature;State colonization temperature: ?R$val$?W
+ledger_inflation_adjusted_gdp;GDP(inflation-adjusted)
+ledger_inflation_adjusted_gdp_per_capita;GDP(inflation-adjusted) per 1m people
+per_nation;Per nation
+per_commodity;Per commodity
+commodity_volume;Volume
+monetary_transaction_volume;Monetary transaction volume
+transaction_success_probability;Probability to successfully perform transaction
+factory_output;Output
+factory_expected_profit;Expected profit
+labour_price;Wage
+labour_price_10k;Wage(10k people)
+supply_demand_ratio;Supply-demand ratio
+change_factory_limit_by;Change $good$ resource potential by $value$
+provinceview_goodsprofit;With Profit of: ?Y$value$
+provinceview_max_employment;Potential max employment: ?Y$value$
+province_rgo_efficiency_inputs;Эффективность inputs:
+province_rgo_efficiency_input;?Y$good$?W : ?Y$value$
+used_throughput_tooltip;Volume used by all routes in the province: ?Y$val$?W
+max_throughput_tooltip;Max volume for routes in the province: ?Y$val$?W
+tariff_rate_origin;Seller effective tariff rate: ?Y$val$
+tariff_rate_target;Buyer effective tariff rate: ?Y$val$
+tariff_paid_origin;Tariffs paid at Seller: ?Y$val$
+tariff_paid_target;Tariffs paid at Buyer: ?Y$val$
+transport_cost_total;Total transportation costs: ?Y$val$
+transport_cost_per_unit;Transportation costs per unit: ?Y$val$
+transportaion_loss;Goods lost in transportation: ?Y$val$
+payment_per_unit;Buyer paid per unit: ?Y$val$
+payment_received_per_unit;Seller got per unit: ?Y$val$
+merchants_received_per_unit;Seller merchants profit per unit: ?Y$val$
+trade_route_volume_profit_score;Profit score: ?Y$val$?W (decides base rate of change). It is calculated as a sum of the following values:
+trade_route_volume_profit_score_export;Export score: ?Y$val$?W. Export profit ?Y$x$?W divided by our export price ?Y$y$?W
+trade_route_volume_profit_score_import;Import score: ?Y$val$?W. Minus import profit ?Y$x$?W divided by their export price ?Y$y$?W
+trade_route_volume_base_change;Base expected change: ?Y$val$?W (Profit score times expansion multiplier)
+trade_route_volume_expansion_multiplier;Expansion multiplier: ?Y$val$?W (Depends on actual access to commodity in exporting market)
+trade_route_volume_decay;Decay: ?Y$val$?W (Prevents trade volume from running too far away and slowly decreases volume of low profit routes)
+trade_route_volume_final_change;Expected change: ?Y$val$
+trade_centre_trade_volume;Trade volume: ?Y$val$
+trade_centre_trade_value;Trade value: ?Y$val$
+trade_centre_imports_volume;Imports volume: ?Y$val$
+trade_centre_imports_value;Imports value: ?Y$val$
+trade_centre_exports_volume;Exports volume: ?Y$val$
+trade_centre_exports_value;Exports value: ?Y$val$
+trade_centre_trade_routes_profit;Profit from trade routes: ?Y$val$
+trade_centre_money;Money stockpile: ?Y$val$
+trade_centre_estimated_money;Estimated next balance: ?Y$val$
+trade_centre_estimated_change;Estimated change: ?Y$val$
+trade_centre_import;Import purchases: ?Y$val$
+trade_centre_export;Export margin: ?Y$val$
+trade_centre_sold;Sales: ?Y$val$
+trade_centre_bought;Local purchases: ?Y$val$
+trade_centre_investments;Pops investment in trade: ?Y$val$
+trade_centre_dividents;Dividents to investors: ?Y$val$
+trade_centre_factories;Factories balance: ?Y$val$
+trade_centre_rgo;RGO balance: ?Y$val$
+trade_centre_services;Services: ?Y$val$
+alice_budget_tariffs_import;Import Duties
+alice_budget_tariffs_export;Export Duties
+alice_budget_overseas_maintanance;Colonial
+alice_budget_social_spending;Benefits
+tb_suppression_points;Suppression points:
+aristocrat_reinvestment;Aristocrats reinvestment rate
+capitalist_reinvestment;Capitalists reinvestment rate
+middle_class_reinvestment;Middle class reinvestment rate
+farmers_reinvestment;Farmers reinvestment rate
+aristocrat_savings;Aristocrats saving rate
+capitalist_savings;Capitalists saving rate
+middle_class_savings;Middle class saving rate
+farmers_savings;Farmers saving rate
+disallow_naval_trade;Ban naval trade
+disallow_land_trade;Ban land trade
+alice_filter_all;All
+alice_filter_none;Нет
+alice_filter_noncolonial;Non Colonial
+alice_filter_colonial;Colonial
+alice_open_filters;Open Filters
+alice_reset_filters;Reset Filters
+alice_only_show_pops;Only Pops
+alice_job_filter_header;Type
+alice_culture_filter_header;Culture
+alice_religion_filter_header;Religion
+alice_location_filter_header;Location
+alice_pop_show_details;Individual Details
+alice_demographics_window_header;Demographics
+alice_demographics_size_header;Size
+alice_demographics_job_header;Type
+alice_demographics_religion_header;Religion
+alice_demographics_location_header;Location
+alice_demographics_employment_header;Employment
+alice_demographics_needs_header;Needs
+alice_demographics_rebel_header;Rebel allegiance
+alice_pop_details_title;Pop Details
+alice_pop_details_location;Location
+alice_pop_details_job;Type:
+alice_pop_details_mil;Militancy:
+alice_pop_details_con;Consciousness:
+alice_pop_details_lit;Literacy:
+alice_pop_details_religion;Religion:
+alice_pop_details_culture;Culture:
+alice_pop_details_employment;Employment:
+alice_pop_details_income;Net Income:
+alice_pop_details_growth;Growth:
+alice_pop_details_assim;Assimilation:
+alice_pop_details_ln;Life Needs
+alice_pop_details_en;Everyday Needs
+alice_pop_details_lx;Luxury Needs
+alice_pop_details_ln_short;LN
+alice_pop_details_en_short;EN
+alice_pop_details_lx_short;LxN
+alice_pop_details_need_name_h;Название
+alice_pop_details_need_amount_h;Qty
+alice_pop_details_need_cost_h;Price
+alice_pop_details_dest_h;Destination
+alice_pop_details_table_weight_h;Weight
+alice_pop_details_table_item_h;Item
+alice_pop_details_prom;Promotion
+alice_pop_details_dem;Demotion
+alice_pop_details_amount;Amount:
+alice_pop_details_ideo;Ideologies
+alice_pop_details_iss;Issues
+alice_pop_details_emm;Emigration
+alice_pop_details_mig;Migration
+alice_pop_details_i_amount;Internal amount:
+alice_pop_details_c_amount;Colonial amount:
+pop_emigration_attraction_1;Emigration attraction is the product of:
+pop_emigration_attraction_2;The national modifier to immigrant attraction: $x$
+pop_emigration_attraction_3;And the migration target factor: $x$
+pop_migration_attraction_1;Migration attraction is the product of:
+pop_migration_attraction_2;The provincial modifier to immigrant attraction: $x$
+pop_migration_attraction_3;The migration target factor: $x$
+pop_migration_attraction_wage_ratio;And the wage difference multipler: $x$
+pop_migration_attraction_bureaucracy;Bureaucracy base attraction: $x$
+alice_toggle_administration;Establish or abolish local administration. Administrations outside your control will not work. Consult administrative map mode to check existing administrations.
+administration_tile;Local administration
+market_tile;Local market
+rgo_tile_header;Natural source of ?Y$good$?W
+province_market_header;Commodity: ?Y$good$?!
+province_market_market;Market: ?Y$name$?!
+province_market_price;Price: ?Y$val$?!
+province_market_supply;Supply: ?G$val$?!
+province_market_demand;Demand: ?R$val$?!
+province_market_production;Production: ?G$val$?!
+province_market_consumption;Consumption: ?R$val$?!
+province_market_stockpiles;Stockpiles: ?Y$val$?!
+province_market_balance;Balance: ?Y$val$?!
+province_market_trade_in;Trade in: ?G$val$?!
+province_market_trade_out;Trade out: ?R$val$?!
+province_market_trade_balance;Trade balance: ?Y$val$?!
+alice_unit_target;===> $x$
+alice_lobby_resync;Resync lobby
+alice_lobby_resync_players_loading;Cannot resync when players are loading
+alice_lobby_resync_no_oos;Нет one is OOS
+alice_lobby_resync_not_host;Only the host may resync
+alice_host_has_resync;Host has resynced the lobby
+alice_naval_coordination_penalty;The $x$ are receiving a naval coordination penalty of ?R$y$?W from outnumbering their enemy, which reduces their target selection by ?R$val$?W
+alice_naval_coordination_bonus;The $x$ are receiving a naval coordination bonus of ?G$y$?W from being outnumbered, which increases their target selection by ?G$val$?W
+alice_naval_stacking_penalty;The $x$ are receiving a damage multiplier of ?R$y$?W from stacking penalties.
+alice_observer_btn_text;Наблюдатель
+alice_observer_already_observer_tooltip;Вы уже находитесь в режиме наблюдателя.
+alice_labor_no_education;Unskilled
+alice_labor_basic_education;Skilled
+alice_labor_high_education;Expert
+alice_labor_guild;Guilds
+alice_labor_high_education_and_accepted;Expert(accepted)
+alice_invalid_value;Invalid value
+alice_wages_tab;Зарплаты
+alice_trade_volume_tab;Trade volume
+economy_scene_embargo;Embargo!
+embargo_reason_war;War
+embargo_reason_origin_embargo;Origin declared embargo
+embargo_reason_origin_join_embargo;Origin joined embargo
+embargo_reason_target_embargo;Target declared embargo
+embargo_reason_target_join_embargo;Target joined embargo
+alice_production_name_sort_tip_province;?YLeft Click?W to sort by province names
+alice_production_name_sort_tip_state;?YShift-Left Click?W to sort by state names
+alice_sort_pops;Sort Pops
+alice_sort_states;Sort States
+alice_topbar_avg_literacy_in_states;The average ?Yliteracy?W of our non-colonial population is ?Y$x$?W
+open_economy_scene;Open economy viewer
+alice_ship_in_supply_range;?GShip in supply range?W, closest port: ?O$x$?W
+alice_ship_not_in_supply_range;?RShip outside supply range?W, closest port: ?O$x$?W
+alice_supply_range_distance;Using ?O$x$?W/?O$y$?W distance to the nearest port
+alice_supply_range_friendly_port;?GAdjacent to friendly port?W
+alice_supply_range_deep_waters;?RIn deep waters?W
+alice_ship_supply_range_unreachable;?RNavy unreachable by any port?W
+open_details;Details
+province_prices;Price (Relative)
+gdp_per_sector;GDP
+gdp_share;Доля ВВП
+province_labor;Рабочие
+province_artisan;Кустари
+gdp_rgo;Первичный сектор:
+gdp_factory;Вторичный сектор (фабрики):
+gdp_artisans;Вторичный сектор (кустари):
+gdp_selected;ВВП выбранной провинции
+gdp_rest;ВВП остальных регионов страны
+market_report;Внешняя торговля на местном рынке провинции ?Y$province$?W
+market_prices_report;Цены в провинции ?Y$province$?W
+rgo_report;Добыча ресурсов: ?Y$province$?W
+province_factories_report;Промышленность провинции ?Y$province$?W
+net_profit_label;Чистая прибыль
+total_sold_label;Доход
+total_bought_label;Затраты
+total_wage_label;Зарплаты
+total_employment_label;Всего занято
+target_employment_tooltip;Целевая занятость
+max_total_employment;Макс. занятость
+pop_project_target_label;Цель инвесторов
+no_factory_type;Нет
+rgo_details_name;Название
+rgo_efficiency_super_header;Эффективность
+rgo_efficiency_value;%
+rgo_efficiency_cost;Стоимость
+local_price;Местная цена
+median_price;Мировая цена
+ratio_to_median;%
+change_price;Изменение
+method_profit_margin;Потенциальная маржа
+ratio_to_median_price;Отношение к мировой цене
+modifier_min_land_upkeep;Мин. содержание сухопутных войск;
+alice_naval_noretreat;Чтобы иметь возможность отступить, все уцелевшие корабли должны быть в среднем на ?O$x$?W ближе к центру
+alice_str_name;Прочность: ?O$val$?W
+alice_naval_retreat_condition_1;Корабли находятся достаточно близко к центру
+alice_naval_retreat_condition_2;Ещё не отступают
+alice_naval_retreat_condition_3;Есть доступ к доступному порту
+alice_navalattackitem_4;Вражеский флот, состоящий из кораблей $DEFENDER$, будет уничтожен нами.
+alice_attackthem_4;Мы атакуем силы $DEFENDER$ и пытаемся прорвать их оборону.
+alice_attackus_4;Вражеские силы $ATTACKER$ вступили с нами в бой.
+alice_truce_with_explain;?Y$WAR$?W: Перемирие с ?Y$NATION$?W. Перемирие длится до $DATE$
+alice_declarewar_truce_with_explain;?Y$NATION$?W: Перемирие с ?Y$TARGET$?W. Перемирие длится до $DATE$
+alice_command_units_condition_1;?Y$NATION$?W является нашим вассалом
+alice_command_units_condition_2;Вы и цель находитесь в состоянии войны
+alice_command_units_condition_3;Цель не является игроком
+alice_command_units_condition_4;Включено в правилах игры
+free_trade_di;Соглашение о свободной торговле
+free_trade_offer;$actor$ предлагает соглашение о свободной торговле, позволяющее торговать без пошлин в течение $years$ лет
+alice_original_war_participant_not_in_war;?Y$NATION$?W больше не участвует в войне
+alice_original_war_participant_desc;?Y$NATION$?W — первоначальный $ACTOR$ этой войны
+alice_original_war_participant_desc_2;Only the truces of the original attacker or defender can block joining a war
+alice_original_war_participant_notinvolved;?Y$NATION$?W ?Ris no longer involved in the war?W
+alice_gamerules_btn_text;Game Rules
+alice_gamerules_change_chat_msg;Host has changed gamerule "$x$" to "$y$"!
+alice_gamerules_nothost;Only the host may change gamerules!
+alice_gamerule_allow_sphereling_declare_war_on_spherelord;Allow spherelings to declare war on spherelord
+alice_gamerule_allow_sphereling_declare_war_on_spherelord_desc;Specifies whether spherelings are allowed to declare on their spherelord,or any nation allied to, or in the same sphere as the spherelord. Also affects joining wars against the side the spherelord is on
+alice_gamerule_allow_sphereling_declare_war_on_spherelord_opt_no;Нет
+alice_gamerule_allow_sphereling_declare_war_on_spherelord_opt_yes;Да
+gamerule_option_is;Gamerule ?Y$x$?W option
+label_gdp_capita_top;Top per 1k people
+label_gdp_top;Top GDP
+label_production_top;Top producers
+label_consumption_top;Top consumers
+gva;GVA
+alice_gamerule_allow_partial_retreat;Partial retreating of military units
+alice_gamerule_allow_partial_retreat_desc;Specifes whether to enable armies and navies to retreat out of a battle one at a time. Also known as "cycling"
+alice_gamerule_allow_partial_retreat_opt_disabled;Cannot partial retreat
+alice_gamerule_allow_partial_retreat_opt_enabled;Can partial retreat
+alice_gamerule_fog_of_war;Fog of war
+alice_gamerule_fog_of_war_desc;Specifies whether to enable fog of war (FoW) to obscure vision of neutral/enemy provinces&units
+alice_gamerule_fog_of_war_opt_disabled;Fog of war is ВЫКЛ
+alice_gamerule_fog_of_war_opt_enabled;Fog of war is ВКЛ
+alice_gamerule_fog_of_war_opt_disabled_for_observer;Туман войны ОТКЛЮЧЕН для наблюдателя
+alice_gamerule_auto_concession_peace;Auto-peace when conceding wargoals
+alice_gamerule_auto_concession_peace_desc;Specifies whether a conceding peacedeal (ie one side surrenders to ALL added wargoals, or 100 warscore) will always be accepted no matter what
+alice_gamerule_auto_concession_peace_opt_cannot_reject;Conceding peace offers cannot be rejected
+alice_gamerule_auto_concession_peace_opt_can_reject;Conceding peace offers can be rejected
+alice_gamerule_command_units;Command AI puppet units while at war
+alice_gamerule_command_units_opt_disabled;Выключено
+alice_gamerule_command_units_opt_enabled;Включено
+alice_gamerule_command_units_desc;Specifies whether AI puppet units may be commanded by the player at war
+alice_savegame_incompatible_warning;?RThis savegame is from a diffrent scenario than the currently loaded one. The save may be buggy, fail to load or crash the game.?W
+alice_show_all_saves_text;Show all saves
+alice_show_all_saves_tooltip;Toggle showing all saves (even potentially incompatible ones) in the save list
+alice_save_input_filename_label;Saved game filename (empty is default name):
+ports_size;Size of ports
+urban_size;Urban size
+civilian_port;Civilian port
+civilian_port_size;Size: ?Y$val$?!
+private_education_owners;Private educators ?Y$val$?!
+port_owners;Local port ?Y$val$?!
+housing_owners;Landlords ?Y$val$?!
+private_education_price;Education price ?Y$val$?!
+private_education_supply_1;Education private supply ?Y$val$?!
+private_education_supply_2;Education public supply ?Y$val$?!
+private_education_demand_1;Education public demand ?Y$val$?!
+private_education_demand_2;Education private demand ?Y$val$?!
+private_education_size_public;Education public size ?Y$val$?!
+private_education_size_private;Education private size ?Y$val$?!
+port_price;Local port price ?Y$val$?!
+housing_price;Housing price ?Y$val$?!
+housing_supply;Housing supply ?Y$val$?!
+housing_demand;Housing demand ?Y$val$?!
+alice_infrastructure_tab;Infrastructure
+economy_overview_header;Economy overview
+alice_extra_armies_tooltip;+ ?Y$x$?W more armies
+alice_extra_navies_tooltip;+ ?Y$x$?W more navies
+alice_pop_details_need_weight;W
+alice_pop_details_need_weight_tooltip;Budget priority of the selected commodity
+button_pop_budget;Open budget details
+pop_budget_details;Budget details
+pop_budget_unemployment;Unemployment
+pop_budget_pension;Pension
+pop_budget_factory_ownership;Factories
+pop_budget_rgo_ownership;RGO
+pop_budget_national_pay;National pay
+pop_budget_business;Entrepreneurship
+pop_budget_guild;Guild
+pop_budget_trade;Trade
+pop_budget_tax;Tax
+pop_budget_investment;Investment
+pop_budget_education;Education
+pop_budget_wages_header;Зарплаты
+pop_budget_income;Income
+pop_budget_spending;Spending
+pop_budget_needs;Needs
+alice_gamerules_header;Game Rules
+zoom_slowest;Slowest
+zoom_slow;Slow
+zoom_medium;Medium
+zoom_fast;Fast
+zoom_fastest;Fastest
+amsg_embargod;The nation has been embargoed
+save_name_label;File name (blank = auto)
+save_warning_tooltip;A file with this name already exists
+production_window_title;Production
+production_combine_types_toggle;Collapse Types
+production_table_name_header;Название
+production_table_size_header;Size
+production_table_amount_header;Quantity
+economy_data_toggle_tooltip;Economy Overview dispays aggregated economy data of the province
+province_tiles_toggle_tooltip;Province Tiles displays all the buildings of the province, including administrations, ports, factories, RGOs, forts, railroads, barracks, etc.
+province_market_toggle_tooltip;Local Market tab displays data of the province market, including prices, supply and demand, production and consumption, stockpiles, imports and exports, etc.
+production_category_production;Production
+production_category_consumption;Consumption
+production_category_employment;Employment
+production_category_details;Information
+production_location_national;All states
+production_filter_all;All commodities
+production_about_combined;Combined
+production_about_factory;Factories
+production_about_artisan;Кустари
+production_about_rgo;RGOs
+production_about_factory_one;Factory
+production_about_artisan_one;Artisan
+production_about_rgo_one;RGO
+production_sub_item_inputs;Затраты
+production_sub_item_uses;Uses
+production_sub_item_labor;Workers
+production_sub_item_consumption;Затраты
+production_explain_view;Production - show production quantities as well as the inputs used\n\nConsumption - show consumption quantities, the processes using the commodity, and any input shortages\n\nEmployment - show how many people are working in each area as well as any labor shortages\n\nInformation - show the basic production recipes and factory specialization information.
+production_explain_location;Show information for the whole nation or for a particular state.
+production_explain_combine;Combine values from factory, artisan, and rgo activities for the same commodity or display them separately.
+production_explain_filter;Show information for all commodities or for one particular commodity.
+production_shortage_warn_inputs;Input shortage
+production_shortage_warn_labor;Рабочие shortage
+production_max_output;Max. output
+production_max_employment;Max. workers
+production_spec_label;Specialization
+production_spec_compare;Rankings
+production_spec_priority_label;Priority
+production_spec_rankings_header;Leaders
+production_rh_state_population;State population
+production_rh_state_consumption;Top consumption
+production_rh_state_production;Top production
+production_directive_header;Construction Directives
+production_directive_explain;One or more construction directives can be assigned at both the state and national level to determine how government construction funds will be used. Click on the desired directive and then click on one of the highlighted regions to assign it. Click on an assigned directive to remove it.
+production_directive_national_header;National directives
+production_directive_national_tt;Any directives set here will apply to all states. Any conflicting directives given to individual states will override any directive assigned nationally.
+directive_description_fmoney;Prioritize factory profits
+directive_description_fpeople;Prioritize maximum employment
+directive_description_fspecial;Prioritize building and upgrading factories with the greatest specialization advantage
+directive_description_fupgrade;Prioritize upgrading existing factories
+directive_description_fnone;Do not build or upgrade factories
+directive_description_rail;Build and upgrade railroads when possible
+directive_description_naval;Build and upgrade naval bases when possible
+directive_description_forts;Build and upgrade forts on national borders when possible
+directive_description_commodity;Prioritize building and upgrading factories producing ?Y$x$?W
+chat_timed_out;$playername$ timed out
+disconnected_message_header;Disconnected
+disconnected_message_name_taken;Your name is taken. Restart and try again with a diffrent name
+disconnected_message_incorrect_password;Incorrect password for this lobby
+disconnected_message_timed_out;Connection timed out
+disconnected_message_kicked;You were kicked from the lobby by the host
+disconnected_message_banned;You were banned from the lobby by the host
+disconnected_message_on_banlist;You are banned from this lobby
+disconnected_message_game_ended;The game has ended
+disconnected_message_game_full;The lobby cannot support more players
+disconnected_message_invalid_command_received_client;Network error: Received an malformed/invalid command from the host. Check log for details
+private_message_btn_disabled_tooltip;You cannot private message yourself
+private_message_button_tooltip;Click to toggle whether this player will receive chat messages from you
+player_loaded_status;Ready
+player_loading_status;Loading
+player_oos_status;OOS
+rgo_bank;RGO balance ?Y$val$?W
+artisan_bank;Guilds balance ?Y$val$?W
+rgo_bank_in;RGOs from production ?Y$val$?W
+rgo_bank_out;RGOs to pops ?Y$val$?W
+factory_bank;Factories balance ?Y$val$?W
+factory_bank_in;Factories from production ?Y$val$?W
+factory_bank_out;Factories to pops ?Y$val$?W
+alice_unit_crossing_modifier;Unit receives a ?Y$x$?W modifier to its combat roll from adjacency modifiers
+alice_river_penalty_mod_tooltip;?Y$COUNT$?W units receives a modifier of ?Y$NUM$?W from river crossing
+alice_strait_penalty_mod_tooltip;?Y$COUNT$?W units receives a modifier of ?Y$NUM$?W from strait crossing or landing penalty
+alice_battle_wide_roll_mod_tooltip;?YBattle-wide roll modifier?W
+alice_unit_specific_roll_mod_tooltip;?YUnit-specific roll modifier?W
+alice_num_units_dug_in_tooltip;?Y$COUNT$?W units are dug in at lvl ?Y$NUM$?W
+alice_num_units_targeting_dug_in_tooltip;?Y$COUNT$?W units are targeting dug in units, giving them ?Y$NUM$?W roll modifier
+alice_unit_dug_in;Unit has a dig-in lvl of ?Y$NUM$?W
+alice_unit_targeting_dug_in_modifier;Unit receives a ?Y$NUM$?W modifier to its combat roll targeting a dug-in unit
+add_wargoal_wargoal_count;Will add ?Y$COUNT$?W wargoal(s) when proceeding
+subsidies_label;Subsidies
+effective_output_tooltip;Effective output (output divided by base output)
+subsidies_explanation_tooltip;Total volume of subsidies is decided by national budget. Factories receive for subsidies proportionally to their effective output. You can set subsidies in updated production menu via directives.
+factory_investments_header;Investments
+total_investments_label;Total
+investment_efficiency_tooltip;Tools, efficiency inputs and machines
+investment_expansion_tooltip;Expansion
+wage;Зарплата: ?Y$value$?W
+construction_cost;Стоимость строительства: ?Y$x$?!
+state;Штат
+factory_inputs;Затраты
+rgo;РГО
+trade_balance;Баланс
+consumption;Потребление
+import;Импорт
+export;Экспорт
+artisan_profit;Прибыль гильдий: ?Y$val$?W
