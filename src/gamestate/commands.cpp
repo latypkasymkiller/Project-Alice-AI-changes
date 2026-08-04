@@ -7486,7 +7486,7 @@ void execute_command(sys::state& state, command_data& c) {
 	case command_type::cancel_given_military_access:
 	{
 		auto& data = c.get_payload<diplo_action_data>();
-		execute_cancel_military_access(state, source_nation, data.target);
+		execute_cancel_given_military_access(state, source_nation, data.target);
 		break;
 	}
 	case command_type::declare_war:
