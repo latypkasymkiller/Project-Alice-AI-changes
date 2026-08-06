@@ -366,7 +366,7 @@ bool macrobuilder2_main_apply_button_t::button_action(sys::state& state) noexcep
 			current_distribution
 		);
 	} else {
-		uint8_t rem_to_build[sys::macro_builder_template::max_types] = { 0 };
+		uint8_t rem_to_build[sys::macro_builder_template::max_types];
 		std::memcpy(rem_to_build, t.amounts, sizeof(rem_to_build));
 
 		std::sort(provinces.begin(), provinces.end(), [&state](auto const a, auto const b) {
