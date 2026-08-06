@@ -1534,7 +1534,7 @@ void conquer_province(sys::state& state, dcon::province_id id, dcon::nation_id n
 	if(state.world.province_get_is_owner_core(id) == false && !was_colonial) {
 		for(auto pop : state.world.province_get_pop_location(id)) {
 			if(!pop.get_pop().get_is_primary_or_accepted_culture()) {
-				pop_demographics::set_militancy(state, pop.get_pop(), std::clamp(pop_demographics::get_militancy(state, pop.get_pop()) + state.defines.mil_hit_from_conquest, 0.0f, 10.0f));
+			pop_demographics::set_militancy(state, pop.get_pop(), std::clamp(pop_demographics::get_militancy(state, pop.get_pop()) + state.defines.mil_hit_from_conquest, 0.0f, 10.0f));
 			}
 		}
 	}
@@ -2255,7 +2255,7 @@ float direct_distance(sys::state& state, dcon::province_id a, dcon::province_id 
 	auto bpos = state.world.province_get_mid_point_b(b);
 	auto dot = (apos.x * bpos.x + apos.y * bpos.y) + apos.z * bpos.z;
 	auto arbitrary_circumference = state.map_state.map_data.world_circumference / 10.0f;
-	return math::acos(dot) * (arbitrary_circumference / (2.0f * math::pi));
+	return math::acos(std::clamp(dot, -1.0f, 1.0f)) * (arbitrary_circumference / (2.0f * math::pi));
 }
 
 
@@ -2263,7 +2263,7 @@ float direct_distance_km(sys::state& state, dcon::province_id a, dcon::province_
 	auto apos = state.world.province_get_mid_point_b(a);
 	auto bpos = state.world.province_get_mid_point_b(b);
 	auto dot = (apos.x * bpos.x + apos.y * bpos.y) + apos.z * bpos.z;
-	return math::acos(dot) * state.defines.alice_globe_mean_radius_km;
+	return math::acos(std::clamp(dot, -1.0f, 1.0f)) * state.defines.alice_globe_mean_radius_km;
 	/*return (math::acos(dot) / math::pi) * ((state.defines.alice_globe_mean_radius_km * 2) * math::pi) / 2.0f;*/
 }
 

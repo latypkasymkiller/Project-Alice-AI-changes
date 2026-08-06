@@ -6177,7 +6177,7 @@ void state::build_up_to_template_land(
 	auto upper_limit = sys::macro_builder_template::max_types;
 
 	// here we store how many units we need to build
-	uint8_t remaining_to_build[sys::macro_builder_template::max_types];
+	uint8_t remaining_to_build[sys::macro_builder_template::max_types] = { 0 };
 	std::memcpy(remaining_to_build, target_template.amounts, sizeof(remaining_to_build));
 
 	// subtract current amount
