@@ -2630,22 +2630,33 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		// issue safe-move gather command
 		for(int32_t m = int32_t(ready_armies.size()); m-- > k + 1; ) {
 			assert(m >= 0 && m < int32_t(ready_armies.size()));
+
+			// СОЗДАЕМ БУФЕР, ЧТОБЫ НЕ СЛОМАТЬ ИТЕРАТОРЫ ПРИ СОЗДАНИИ НОВЫХ АРМИЙ
+			std::vector<dcon::army_id> armies_to_process;
 			for(auto ar : state.world.province_get_army_location(ready_armies[m].p)) {
-				if(ar.get_army().get_battle_from_army_battle_participation()
-					|| n != ar.get_army().get_controller_from_army_control()
-					|| ar.get_army().get_navy_from_army_transport()
-					|| ar.get_army().get_black_flag()
-					|| ar.get_army().get_arrival_time()
-					|| army_activity(ar.get_army().get_ai_activity()) != army_activity::on_guard
-					|| !army_ready_for_battle(state, n, ar.get_army())) {
+				armies_to_process.push_back(ar.get_army().id);
+			}
+
+			// ТЕПЕРЬ БЕЗОПАСНО ПЕРЕБИРАЕМ АРМИИ ИЗ БУФЕРА
+			for(auto arid : armies_to_process) {
+				if(!state.world.army_is_valid(arid)) continue;
+				auto ar_army = dcon::fatten(state.world, arid);
+
+				if(ar_army.get_battle_from_army_battle_participation()
+					|| n != ar_army.get_controller_from_army_control()
+					|| ar_army.get_navy_from_army_transport()
+					|| ar_army.get_black_flag()
+					|| ar_army.get_arrival_time()
+					|| army_activity(ar_army.get_ai_activity()) != army_activity::on_guard
+					|| !army_ready_for_battle(state, n, ar_army)) {
 
 					continue;
 				}
 
 				// DOUBLE-CHECK: Do not strip frontline on command issuance if threat was detected
-				auto loc_fat = ar.get_army().get_location_from_army_location();
+				auto loc_fat = ar_army.get_location_from_army_location();
 				bool should_hold_frontline = false;
-				float const army_w = use_pressure ? ai::army_pressure_weight(state, ar.get_army().id) : 0.0f;
+				float const army_w = use_pressure ? ai::army_pressure_weight(state, arid) : 0.0f;
 
 				if(use_pressure) {
 					bool is_frontline = false;
@@ -2688,7 +2699,7 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 					continue; // Hold frontline sector
 				}
 
-				dcon::army_id army_to_send = split_army_for_weight(state, n, ar.get_army().id, target_attack_force);
+				dcon::army_id army_to_send = split_army_for_weight(state, n, arid, target_attack_force);
 				float const actual_w = use_pressure ? ai::army_pressure_weight(state, army_to_send) : 0.0f;
 
 				if(use_pressure && actual_w > 0.0f) {
@@ -2720,12 +2731,12 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 }
 
 void make_attacks(sys::state& state) {
-	concurrency::parallel_for(uint32_t(0), state.world.nation_size(), [&](uint32_t i) {
+	for(uint32_t i = 0; i < state.world.nation_size(); ++i) {
 		dcon::nation_id n{ dcon::nation_id::value_base_t(i) };
 		if(state.world.nation_is_valid(n)) {
 			assign_targets(state, n);
 		}
-	});
+	}
 }
 
 void make_defense(sys::state& state, bool at_war_only) {
