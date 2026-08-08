@@ -1611,7 +1611,8 @@ void move_idle_guards(sys::state& state) {
 			&& unit_on_ai_control(state, ar)
 			&& !ar.get_arrival_time()
 			&& !ar.get_battle_from_army_battle_participation()
-			&& !ar.get_navy_from_army_transport()) {
+			&& !ar.get_navy_from_army_transport()
+			&& ar.get_ai_activity() != uint8_t(army_activity::transport_guard)) {
 
 			auto controller = ar.get_controller_from_army_control();
 			auto army_loc = ar.get_location_from_army_location();
@@ -3205,7 +3206,9 @@ void new_units_and_merging(sys::state& state) {
 
 			auto location = ar.get_location_from_army_location();
 
-			if(ar.get_black_flag() || army_activity(ar.get_ai_activity()) == army_activity::unspecified || army_activity(ar.get_ai_activity()) == army_activity::on_guard) {
+			auto act = army_activity(ar.get_ai_activity());
+			bool in_transport = (act == army_activity::transport_guard || act == army_activity::transport_attack || act == army_activity::attack_transport || bool(ar.get_navy_from_army_transport()));
+			if(!in_transport && (ar.get_black_flag() || act == army_activity::unspecified || act == army_activity::on_guard)) {
 				auto regs = ar.get_army_membership();
 				if(regs.begin() == regs.end()) {
 					// empty army -- cleanup will get it
