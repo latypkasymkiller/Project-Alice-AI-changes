@@ -629,6 +629,26 @@ inline xy_pair add_shift(xy_pair A, xy_pair B) {
 	return { (int16_t)(A.x + B.x), (int16_t)(A.y + B.y) };
 }
 
+// An army loaded onto a transport keeps its location set to the province the fleet is sitting in,
+// but it is displayed as cargo of that fleet, not as a force standing in the province. So a province
+// holding nothing but embarked armies must not get a counter of its own: otherwise loading troops in
+// a port leaves an empty counter behind, showing 0 strength and selecting nothing when clicked.
+inline bool province_has_unit_counter(sys::state& state, dcon::province_id prov) {
+	if(!prov)
+		return false;
+
+	if(prov.index() >= state.province_definitions.first_sea_province.index()) {
+		auto navies = state.world.province_get_navy_location(prov);
+		return navies.begin() != navies.end();
+	}
+
+	for(auto a : state.world.province_get_army_location(prov)) {
+		if(!a.get_army().get_navy_from_army_transport())
+			return true;
+	}
+	return false;
+}
+
 constexpr int battle_shift_big = -38;
 constexpr int battle_shift_small = -48;
 
@@ -1030,6 +1050,12 @@ public:
 				if(render_count[prov.index()] == render_global_count) {
 					continue;
 				}
+				if(!province_has_unit_counter(state, prov)) {
+					// every army here is aboard a transport: there is nothing to draw
+					visible_counters[prov.index()] = 0;
+					render_count[prov.index()] = render_global_count;
+					continue;
+				}
 				auto rendered = render_province_big(state, prov);
 				render_count[prov.index()] = render_global_count;
 				if(!rendered) {
@@ -1073,6 +1099,12 @@ public:
 					continue;
 				}
 				if(render_count[prov.index()] == render_global_count) {
+					continue;
+				}
+				if(!province_has_unit_counter(state, prov)) {
+					// every army here is aboard a transport: there is nothing to draw
+					visible_counters[prov.index()] = 0;
+					render_count[prov.index()] = render_global_count;
 					continue;
 				}
 				auto rendered = render_province_small(state, prov);
@@ -1250,7 +1282,9 @@ public:
 		mouse_probe probe_result = mouse_probe{nullptr, xy_pair{int16_t(mx), int16_t(my)}};
 
 		// check cached result first
-		if(probe_specific_province(state, hovered_icon, mx, my, type)) {
+		// (the cached province may have lost its counter since it was hovered, and visible_counters
+		// is only refreshed for provinces that still get drawn, so it has to be re-tested here)
+		if(province_has_unit_counter(state, hovered_icon) && probe_specific_province(state, hovered_icon, mx, my, type)) {
 			probe_result.under_mouse = this;
 			return probe_result;
 		}
@@ -1258,6 +1292,9 @@ public:
 		for(auto army : state.world.in_army) {
 			auto prov = state.world.army_get_location_from_army_location(army);
 			if(!prov) {
+				continue;
+			}
+			if(army.get_navy_from_army_transport()) {
 				continue;
 			}
 			if(probe_specific_province(state, prov, mx, my, type)) {
