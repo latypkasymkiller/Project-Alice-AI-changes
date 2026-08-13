@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <string>
 
+#include "nations.hpp"
 #include "system_state.hpp"
 #include "text.hpp"
 
@@ -40,15 +41,18 @@ inline constexpr bool enabled() {
 	return AI_DEBUG_USA != 0;
 }
 
-// True when `n` holds the USA tag. Uses the same tag extraction the rest of the
-// AI already uses (national identity name == tag string).
+// True when `n` holds the USA tag. The country tag lives in
+// national_identity::identifying_int (the `name` field is the localized
+// display name, e.g. "United States"), so we compare through
+// nations::int_to_tag — the same way save-file names are built in
+// serialization.cpp.
 inline bool is_usa(sys::state& state, dcon::nation_id n) {
 	if(!n)
 		return false;
 	auto ident = state.world.nation_get_identity_from_identity_holder(n);
 	if(!ident)
 		return false;
-	return text::produce_simple_string(state, state.world.national_identity_get_name(ident)) == "USA";
+	return nations::int_to_tag(state.world.national_identity_get_identifying_int(ident)) == "USA";
 }
 
 // "<ProvinceName>#<index>"; "<none>" when the province id is null.
