@@ -1047,6 +1047,9 @@ public:
 				if(!prov) {
 					continue;
 				}
+				if(army.get_navy_from_army_transport()) {
+					continue;
+				}
 				if(render_count[prov.index()] == render_global_count) {
 					continue;
 				}
@@ -1096,6 +1099,9 @@ public:
 			for(auto army : state.world.in_army) {
 				auto prov = state.world.army_get_location_from_army_location(army);
 				if(!prov) {
+					continue;
+				}
+				if(army.get_navy_from_army_transport()) {
 					continue;
 				}
 				if(render_count[prov.index()] == render_global_count) {
