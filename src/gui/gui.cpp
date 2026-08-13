@@ -534,7 +534,13 @@ void unit_counter_window::update_province_data(sys::state& state, dcon::province
 	}
 	auto& display = display_cache[prov.index()];
 
-	populated_counters[prov.index()] = province_has_unit_counter(state, prov) ? 1 : 0;
+	if(prov.index() < state.province_definitions.first_sea_province.index()) {
+		auto armies = state.world.province_get_army_location(prov);
+		populated_counters[prov.index()] = (armies.begin() == armies.end()) ? 0 : 1;
+	} else {
+		auto navies = state.world.province_get_navy_location(prov);
+		populated_counters[prov.index()] = (navies.begin() == navies.end()) ? 0 : 1;
+	}
 
 	bool player_involved_battle = false;
 	dcon::land_battle_id lbattle;

@@ -2102,9 +2102,6 @@ void display_data::render(
 					auto p2 = p1;
 					bool has_unit = false;
 					for(const auto unit : units) {
-						// armies aboard a transport are shown with the fleet, they do not stand in the province
-						if(unit.get_army().get_navy_from_army_transport())
-							continue;
 						for(const auto sm : unit.get_army().get_army_membership()) {
 							auto& t = state.military_definitions.unit_base_definitions[sm.get_regiment().get_type()];
 							if(t.type == type) {
