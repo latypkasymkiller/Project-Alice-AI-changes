@@ -1,4 +1,5 @@
 #include "ai.hpp"
+#include "ai_debug_log.hpp"
 #include "ai_pressure.hpp"
 #include "ai_types.hpp"
 #include "ai_campaign_values.hpp"
@@ -693,6 +694,9 @@ void validate_ai_orders(sys::state& state) {
 					// The station is left alone, so move_idle_guards walks the army back to
 					// its post rather than leaving it standing in the open.
 					military::stop_army_movement(state, ar);
+
+					ai::dbg::log(state, controller, "VALIDATE cancel(roundtrip_dead): " + ai::dbg::army_str(state, ar.id));
+
 					cancelled = true;
 				}
 			}
@@ -731,6 +735,11 @@ void validate_ai_orders(sys::state& state) {
 					if(hostile_there > 0.0f && hostile_there > sufficiency * friendly_there) {
 						military::stop_army_movement(state, ar);
 
+						ai::dbg::log(state, controller, "VALIDATE cancel(hostile_ahead): " + ai::dbg::army_str(state, ar.id)
+							+ " next=" + ai::dbg::prov_str(state, next)
+							+ " hostile_there=" + std::to_string(hostile_there)
+							+ " friendly_there=" + std::to_string(friendly_there));
+
 						// The station goes with the march. Cancelling the path alone left the
 						// army pointed at the same place, and move_idle_guards re-issued the
 						// identical order on its next pass for this check to cancel again,
@@ -761,6 +770,10 @@ void validate_ai_orders(sys::state& state) {
 
 				if(!valid) {
 					military::stop_army_movement(state, ar.id);
+
+					ai::dbg::log(state, controller, "VALIDATE cancel(station_invalid): " + ai::dbg::army_str(state, ar.id)
+						+ " station=" + ai::dbg::prov_str(state, station));
+
 					ar.set_ai_province(dcon::province_id{});
 				}
 			}
@@ -785,6 +798,10 @@ void validate_ai_orders(sys::state& state) {
 				&& !(occupier && military::are_at_war(state, controller, occupier));
 
 			if(nothing_left) {
+				ai::dbg::log(state, controller, "VALIDATE release(nothing_left): " + ai::dbg::army_str(state, ar.id)
+					+ " at=" + ai::dbg::prov_str(state, location)
+					+ " occupier_ctrl=" + std::to_string(occupier ? occupier.index() : -1));
+
 				ar.set_ai_activity(uint8_t(army_activity::on_guard));
 				ar.set_ai_province(dcon::province_id{});
 			}
@@ -1280,6 +1297,10 @@ dcon::army_id split_army_for_weight(sys::state& state, dcon::nation_id n, dcon::
 		state.world.army_set_ai_activity(new_army, state.world.army_get_ai_activity(a));
 		state.world.army_set_ai_province(new_army, state.world.army_get_ai_province(a));
 		state.world.army_set_is_ai_controlled(new_army, state.world.army_get_is_ai_controlled(a));
+
+		ai::dbg::log(state, n, "SPLIT: detached " + ai::dbg::army_str(state, new_army)
+			+ " (" + std::to_string(to_split.size()) + " regs) from " + ai::dbg::army_str(state, a)
+			+ " desired_weight=" + std::to_string(desired_weight));
 	}
 
 	return new_army ? new_army : a;
@@ -1485,6 +1506,20 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 		return a.id.index() < b.id.index();
 	});
 
+	// --- USA debug: summarize how many provinces landed in each defensive echelon ---
+	if(ai::dbg::enabled() && ai::dbg::is_usa(state, n)) {
+		uint32_t cnt[uint32_t(province_class::count)] = {0};
+		for(auto const& cp : provinces)
+			++cnt[uint32_t(cp.c)];
+		ai::dbg::log(state, n, "DEFEND classify: guards=" + std::to_string(guards_list.size())
+			+ " hostile_border=" + std::to_string(cnt[uint32_t(province_class::hostile_border)])
+			+ " rear1=" + std::to_string(cnt[uint32_t(province_class::hostile_rear_1)])
+			+ " rear2=" + std::to_string(cnt[uint32_t(province_class::hostile_rear_2)])
+			+ " allied_border=" + std::to_string(cnt[uint32_t(province_class::allied_hostile_border)])
+			+ " threat_border=" + std::to_string(cnt[uint32_t(province_class::threat_border)])
+			+ " border=" + std::to_string(cnt[uint32_t(province_class::border)]));
+	}
+
 	// distribute target provinces
 	uint32_t end_of_stage = 0;
 
@@ -1557,6 +1592,11 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 
 					// assign nearest guard
 					if(nearest) {
+						ai::dbg::log(state, n, "DEFEND assign: " + ai::dbg::army_str(state, nearest)
+							+ " -> station " + ai::dbg::prov_str(state, p)
+							+ " class=" + std::to_string(uint32_t(provinces[j].c))
+							+ " pressure=" + std::to_string(int32_t(provinces[j].pressure)));
+
 						state.world.army_set_ai_province(nearest, p);
 						guards_list[nearest_index] = guards_list.back();
 						guards_list.pop_back();
@@ -1659,6 +1699,9 @@ void move_idle_guards(sys::state& state) {
 
 			auto path = province::make_safe_land_path(state, ar.get_location_from_army_location().id, ar.get_ai_province(), ar.get_controller_from_army_control());
 			bool valid_path = !path.empty() && military::set_army_path(state, ar.id, path, ar.get_controller_from_army_control());
+
+			ai::dbg::log(state, ar.get_controller_from_army_control(), "GUARD march: " + ai::dbg::army_str(state, ar.id)
+				+ " path_len=" + std::to_string(path.size()) + " valid=" + (valid_path ? "1" : "0"));
 
 			if(!valid_path) {
 				//Units delegated to the AI won't transport themselves on their own
@@ -1864,6 +1907,9 @@ void gather_to_battle_legacy(sys::state& state, dcon::nation_id n, dcon::provinc
 		// move back and fourth between the battle and original location
 		military::move_army_ai(state, ar.get_army().id, p, n);
 		military::move_army_ai(state, ar.get_army().id, ar.get_army().get_location_from_army_location(), n, false);
+
+		ai::dbg::log(state, n, "GATHER legacy: " + ai::dbg::army_str(state, ar.get_army().id)
+			+ " -> battle " + ai::dbg::prov_str(state, p) + " (round trip)");
 	}
 }
 
@@ -1950,6 +1996,13 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 		- friendly_engaged
 		- inbound;
 
+	ai::dbg::log(state, n, "GATHER eval: battle=" + ai::dbg::prov_str(state, p)
+		+ " hostile=" + std::to_string(hostile_engaged)
+		+ " friendly=" + std::to_string(friendly_engaged)
+		+ " inbound=" + std::to_string(inbound)
+		+ " need=" + std::to_string(need)
+		+ " candidates=" + std::to_string(candidates.size()));
+
 	if(need <= 0.0f)
 		return;
 
@@ -2017,6 +2070,18 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 		// Путь есть: отделяем требуемый вес
 		dcon::army_id army_to_send = split_army_for_weight(state, n, c.a, send_w);
 		float const actual_w = ai::army_pressure_weight(state, army_to_send);
+
+		ai::dbg::log(state, n, "GATHER commit: " + ai::dbg::army_str(state, army_to_send)
+			+ " -> battle " + ai::dbg::prov_str(state, p)
+			+ " from=" + ai::dbg::prov_str(state, c.loc)
+			+ " weight=" + std::to_string(c.weight)
+			+ " send=" + std::to_string(send_w)
+			+ " actual=" + std::to_string(actual_w)
+			+ " frontline=" + (is_frontline ? "1" : "0")
+			+ " overwhelm=" + (overwhelm ? "1" : "0")
+			+ " cover_remains=" + (cover_remains ? "1" : "0")
+			+ " facing=" + std::to_string(facing)
+			+ " cover=" + std::to_string(cover));
 
 		// Назначаем построенный путь новой армии и добавляем обратный путь
 		military::set_army_path(state, army_to_send, path, n);
@@ -2513,6 +2578,12 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 	int32_t max_attacks_to_make = is_at_war ? std::max(min_ready_count, (ready_count + 1) / 3) : ready_count; // not at war -- allow all stacks to attack rebels
 	auto const psize = potential_targets.size();
 
+	ai::dbg::log(state, n, "ATTACK eval: ready_armies=" + std::to_string(ready_count)
+		+ " targets=" + std::to_string(psize)
+		+ " frontline_targets=" + std::to_string(has_any_frontline_target)
+		+ " at_war=" + std::to_string(is_at_war)
+		+ " max_attacks=" + std::to_string(max_attacks_to_make));
+
 	for(uint32_t i = 0; i < psize && max_attacks_to_make > 0; ++i) {
 		if(!potential_targets[i].location)
 			continue; // target has been removed as too close by some earlier iteration
@@ -2628,6 +2699,11 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		if(!central_province)
 			continue;
 
+		ai::dbg::log(state, n, "ATTACK target: " + ai::dbg::prov_str(state, potential_targets[i].location)
+			+ " est_enemy=" + std::to_string(target_attack_force)
+			+ " assigned_force=" + std::to_string(a_force_str)
+			+ " assembly=" + ai::dbg::prov_str(state, central_province));
+
 		// issue safe-move gather command
 		for(int32_t m = int32_t(ready_armies.size()); m-- > k + 1; ) {
 			assert(m >= 0 && m < int32_t(ready_armies.size()));
@@ -2710,10 +2786,18 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 				if(ready_armies[m].p == central_province) {
 					state.world.army_set_ai_province(army_to_send, potential_targets[i].location);
 					state.world.army_set_ai_activity(army_to_send, uint8_t(army_activity::attacking));
+
+					ai::dbg::log(state, n, "ATTACK order: " + ai::dbg::army_str(state, army_to_send)
+						+ " already_at_assembly=1 target=" + ai::dbg::prov_str(state, potential_targets[i].location));
 				} else if(auto path = province::make_safe_land_path(state, ready_armies[m].p, central_province, n); !path.empty()) {
 					military::set_army_path(state, army_to_send, path, n);
 					state.world.army_set_ai_province(army_to_send, potential_targets[i].location);
 					state.world.army_set_ai_activity(army_to_send, uint8_t(army_activity::attacking));
+
+					ai::dbg::log(state, n, "ATTACK order: " + ai::dbg::army_str(state, army_to_send)
+						+ " -> assembly " + ai::dbg::prov_str(state, central_province)
+						+ " path_len=" + std::to_string(path.size())
+						+ " target=" + ai::dbg::prov_str(state, potential_targets[i].location));
 				}
 			}
 		}
@@ -2855,9 +2939,19 @@ void move_gathered_attackers(sys::state& state) {
 
 										military::set_army_path(state, o.get_army(), path, o.get_army().get_controller_from_army_control());
 										o.get_army().set_ai_activity(uint8_t(army_activity::attack_gathered));
+
+										ai::dbg::log(state, ar.get_controller_from_army_control(), "GATHERED launch: "
+											+ ai::dbg::army_str(state, o.get_army().id)
+											+ " -> target " + ai::dbg::prov_str(state, target_prov)
+											+ " path_len=" + std::to_string(path.size())
+											+ " adjacent=" + (is_adjacent ? "1" : "0")
+											+ " safe=" + (is_safe_path ? "1" : "0"));
 									}
 								}
 							} else {
+								ai::dbg::log(state, ar.get_controller_from_army_control(), "GATHERED bail(no_path): "
+									+ ai::dbg::army_str(state, ar.id) + " target=" + ai::dbg::prov_str(state, target_prov));
+
 								ar.set_ai_activity(uint8_t(army_activity::on_guard));
 								ar.set_ai_province(dcon::province_id{});
 							}
@@ -3253,9 +3347,15 @@ void new_units_and_merging(sys::state& state) {
 						if(target_location == location) {
 							ar.set_ai_province(target_location);
 							ar.set_ai_activity(uint8_t(army_activity::merging));
+
+							ai::dbg::log(state, controller, "MERGE order: " + ai::dbg::army_str(state, ar.id)
+								+ " -> merge_into " + ai::dbg::prov_str(state, target_location) + " (same province)");
 						} else if(bool valid_path = military::move_army_ai(state, ar, target_location, controller);  valid_path) {
 							ar.set_ai_province(target_location);
 							ar.set_ai_activity(uint8_t(army_activity::merging));
+
+							ai::dbg::log(state, controller, "MERGE order: " + ai::dbg::army_str(state, ar.id)
+								+ " -> merge_into " + ai::dbg::prov_str(state, target_location));
 						} else {
 							ar.set_ai_activity(uint8_t(army_activity::on_guard));
 						}
@@ -3290,6 +3390,10 @@ void new_units_and_merging(sys::state& state) {
 
 						if((is_art && num_support < 5) || (!is_art && num_frontline < 5)) {
 							(*regs.begin()).get_regiment().set_army_from_army_membership(o.get_army());
+
+							ai::dbg::log(state, controller, "MERGE do: " + ai::dbg::army_str(state, ar.id)
+								+ " -> " + ai::dbg::army_str(state, o.get_army().id));
+
 							break;
 						}
 					}
