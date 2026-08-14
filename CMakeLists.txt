@@ -72,6 +72,7 @@ set_source_files_properties(src/lunasvg/plutovg-surface.c PROPERTIES SKIP_PRECOM
 
 list(APPEND ALICE_INCREMENTAL_SOURCES_LIST_AI
 	"${PROJECT_SOURCE_DIR}/src/ai/ai.cpp"
+	"${PROJECT_SOURCE_DIR}/src/ai/ai_log.cpp"
 	"${PROJECT_SOURCE_DIR}/src/ai/ai_campaign.cpp"
 	"${PROJECT_SOURCE_DIR}/src/ai/ai_campaign_values.cpp"
 	"${PROJECT_SOURCE_DIR}/src/ai/ai_focuses.cpp"
