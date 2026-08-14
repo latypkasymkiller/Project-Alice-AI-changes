@@ -2799,7 +2799,7 @@ void move_gathered_attackers(sys::state& state) {
 				if(province::has_access_to_province(state, ar.get_controller_from_army_control(), ar.get_ai_province())) {
 					require_transport.push_back(ar.id);
 				} else {
-					AI_LOG(state, 3, "attack", "attack_transport cancelled (no access to target): " + text::get_name_as_string(state, ar.get_controller_from_army_control()) + " army#" + std::to_string(ar.id.index()) + " prov#" + std::to_string(ar.get_ai_province().index()));
+					AI_LOG(state, 3, "attack", "attack_transport cancelled (no access to target): " + text::get_name_as_string(state, ar.get_controller_from_army_control()) + " army#" + std::to_string(ar.id.index()) + " prov#" + std::to_string(ar.get_ai_province().id.index()));
 					ar.set_ai_activity(uint8_t(army_activity::on_guard));
 					ar.set_ai_province(dcon::province_id{});
 				}
@@ -2811,7 +2811,7 @@ void move_gathered_attackers(sys::state& state) {
 
 				if(ar.get_location_from_army_location() == ar.get_ai_province()) { // attack finished ?
 					if(ar.get_location_from_army_location().get_nation_from_province_control() && !military::are_at_war(state, ar.get_location_from_army_location().get_nation_from_province_control(), ar.get_controller_from_army_control())) {
-						AI_LOG(state, 3, "attack", "attack_gathered ended (no enemy at prov#" + std::to_string(ar.get_ai_province().index()) + "): " + text::get_name_as_string(state, ar.get_controller_from_army_control()) + " army#" + std::to_string(ar.id.index()));
+						AI_LOG(state, 3, "attack", "attack_gathered ended (no enemy at prov#" + std::to_string(ar.get_ai_province().id.index()) + "): " + text::get_name_as_string(state, ar.get_controller_from_army_control()) + " army#" + std::to_string(ar.id.index()));
 						ar.set_ai_activity(uint8_t(army_activity::on_guard));
 						ar.set_ai_province(dcon::province_id{});
 					}

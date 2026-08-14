@@ -1,52 +1,77 @@
 #pragma once
 
 #include <string_view>
+#include <string>
+#include <fstream>
+#include <mutex>
+#include <cstdint>
+#include <cstdlib>
 
-// Forward declaration only -- the logger never needs the full definition of
-// sys::state, it just threads it through so each line can be stamped with the
-// in-game date.
+#include "system_state.hpp"
+
 namespace sys {
 struct state;
 }
 
 namespace ai {
 
-// Returns true when AI logging is active at the requested verbosity level.
-//
-// Activate by setting the ALICE_AI_LOG environment variable before launching the
-// game:
-//   ALICE_AI_LOG=1   -> log only the highest-level orchestration events
-//   ALICE_AI_LOG=3   -> log decision-making detail (recommended for debugging AI)
-//   ALICE_AI_LOG=5   -> log everything (very verbose)
-//   ALICE_AI_LOG=on  -> same as 5
-// When the variable is unset or "0", logging is completely disabled and none of
-// the AI_LOG arguments are ever evaluated, so game behaviour is unchanged.
-int ai_log_max_level();
+// Parsed from ALICE_AI_LOG once per process. "on"/"true"/"1" -> level 5; otherwise an integer 0..5.
+// Zero (or unset) disables logging, and the AI_LOG macro then evaluates nothing.
+inline int ai_log_max_level() {
+	static bool opened = false;
+	static int level = 0;
+	if(!opened) {
+		opened = true;
+		char const* env = std::getenv("ALICE_AI_LOG");
+		if(env && *env) {
+			std::string s(env);
+			if(s == "on" || s == "true" || s == "1") {
+				level = 5;
+			} else {
+				try {
+					level = std::stoi(s);
+				} catch(...) {
+					level = 0;
+				}
+			}
+			if(level < 0)
+				level = 0;
+			if(level > 5)
+				level = 5;
+		}
+	}
+	return level;
+}
 
 inline bool ai_log_enabled(int level) {
 	return level <= ai_log_max_level();
 }
 
-// Append a single log line (stamped with the in-game date) to the AI log file.
-// `category` is a short string identifying the subsystem (e.g. "attack",
-// "defense", "war_dec"). Callers should prefer the AI_LOG macro so the message
-// expression is only built when logging is actually enabled.
-void ai_log_message(sys::state const& state, int level, std::string_view category, std::string_view message);
+// Static locals inside an inline function are a single shared instance across all TUs, so this
+// opens exactly one file handle and serializes every write behind one mutex.
+inline void ai_log_message(sys::state const& state, int level, std::string_view category, std::string_view message) {
+	static std::mutex mtx;
+	static std::ofstream out;
+	static bool opened = false;
+	std::lock_guard<std::mutex> lock(mtx);
+	if(!opened) {
+		opened = true;
+		out.open("alice_ai.log", std::ios::out | std::ios::app);
+	}
+	if(!out.is_open())
+		return;
+	auto d = state.current_date.to_ymd(state.start_date);
+	out << d.year << '.' << int(d.month) << '.' << int(d.day) << " [" << level << "] " << category << ": " << message << "\n";
+	out.flush();
+}
+
+#ifndef AI_LOG
+#define AI_LOG(state, level, category, message)                               \
+	do {                                                                     \
+		if(::ai::ai_log_enabled(level)) {                                     \
+			::ai::ai_log_message((state), (level), (category), (message));     \
+		}                                                                     \
+	} while(false)
+#endif
 
 } // namespace ai
-
-// AI_LOG(state, level, category, message)
-//
-// `message` may be any expression convertible to std::string (e.g. a string
-// concatenation). It is evaluated ONLY when ai_log_enabled(level) is true, so
-// enabling logging has zero effect on control flow or on the values the AI code
-// reads when logging is disabled.
-//
-// IMPORTANT: this macro only *observes* the game state -- it must never appear
-// in a position that would change a variable's value or a branch's outcome.
-#define AI_LOG(state, level, category, message)                                                       \
-	do {                                                                                               \
-		if (::ai::ai_log_enabled(level)) {                                                             \
-			::ai::ai_log_message((state), (level), (category), (message));                            \
-		}                                                                                              \
-	} while (false)
