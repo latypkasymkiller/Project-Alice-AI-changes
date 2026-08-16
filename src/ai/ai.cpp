@@ -2614,16 +2614,53 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		dcon::province_id central_province;
 		float minimal_distance = 100000.0f;
 
-		province::for_each_land_province(state, [&](dcon::province_id p) {
-			if(!province::has_safe_access_to_province(state, n, p))
-				return;
+		// move_gathered_attackers only permits a land assault from a province ADJACENT to the target.
+		// Picking the assembly point by straight-line sorting_distance could select a province on the
+		// far side of a water body (e.g. Marquette across Lake Superior from Thunder Bay): the armies
+		// gathered there for weeks, the assault was then cancelled as a "distant continental target",
+		// the objective was cleared and reassigned the next day -- an endless loop.
+		// Prefer an assembly point among the land neighbours of the target itself, choosing the one
+		// the assigned armies have to march the least to reach.
+		{
+			auto target_fat = dcon::fatten(state.world, potential_targets[i].location);
+			for(auto padj : target_fat.get_province_adjacency()) {
+				auto other = padj.get_connected_provinces(0) == target_fat ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
 
-			auto dist = province::sorting_distance(state, p, potential_targets[i].location);
-			if(!central_province || dist < minimal_distance) {
-				minimal_distance = dist;
-				central_province = p;
+				// sea tiles (including large lakes) cannot host a land assembly point
+				if(other.id.index() >= state.province_definitions.first_sea_province.index())
+					continue;
+
+				if(!province::has_safe_access_to_province(state, n, other.id))
+					continue;
+
+				float march_cost = 0.0f;
+				for(int32_t m2 = int32_t(ready_armies.size()); m2-- > k + 1; ) {
+					march_cost += province::sorting_distance(state, ready_armies[m2].p, other.id);
+				}
+
+				if(!central_province || march_cost < minimal_distance) {
+					minimal_distance = march_cost;
+					central_province = other.id;
+				}
 			}
-		});
+		}
+
+		// Fallback: the target has no reachable land neighbour. Keep the original behaviour --
+		// coastal targets are still handled by the naval transport branch in move_gathered_attackers.
+		if(!central_province) {
+			minimal_distance = 100000.0f;
+
+			province::for_each_land_province(state, [&](dcon::province_id p) {
+				if(!province::has_safe_access_to_province(state, n, p))
+					return;
+
+				auto dist = province::sorting_distance(state, p, potential_targets[i].location);
+				if(!central_province || dist < minimal_distance) {
+					minimal_distance = dist;
+					central_province = p;
+				}
+			});
+		}
 
 		if(!central_province)
 			continue;
