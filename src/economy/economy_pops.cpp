@@ -179,9 +179,17 @@ auto prepare_pop_budget_templated(
 	VALUE housing_spending_ratio = 0.3f;
 	VALUE everyday_spending_ratio = state.defines.alice_needs_ev_spend * (1.f - is_poor);
 	VALUE luxury_spending_ratio = state.defines.alice_needs_lx_spend * (1.f - is_poor);
+	VALUE categories_spending_ratio = 0.0f;
 	VALUE education_spending_ratio = (0.2f) * (1.f - is_poor);
 	VALUE investment_ratio = adaptive_ve::max<VALUE>(investment_rate<VALUE>(state, ids), 0.0f);
 	VALUE banking_ratio = adaptive_ve::max<VALUE>(bank_saving_rate<VALUE>(state, ids), 0.0f);
+
+	if(state.world.consumption_category_size() != 0) {
+		life_spending_ratio = 0.f;
+		everyday_spending_ratio = 0.f;
+		luxury_spending_ratio = 0.f;
+		categories_spending_ratio = 0.5f;
+	}
 
 	VALUE total_spending_ratio =
 		life_spending_ratio
@@ -210,6 +218,7 @@ auto prepare_pop_budget_templated(
 
 	// set actual budgets
 
+	VALUE spend_on_categories = categories_spending_ratio * savings;
 	VALUE spend_on_life_needs = life_spending_ratio * savings;
 	VALUE spend_on_housing = housing_spending_ratio * savings;
 	VALUE spend_on_everyday_needs = everyday_spending_ratio * savings;
@@ -219,16 +228,60 @@ auto prepare_pop_budget_templated(
 	VALUE spend_on_bank_savings = banking_ratio * savings;
 
 	// upload data to structure
-	// here we do logic which can't be made uniform
+
+	if(state.world.consumption_category_size() != 0) {
+		// all consumption goes first in this model
+		state.world.for_each_consumption_category([&](auto cat) {
+			auto base_cost = state.world.market_get_cost_per_consumption_category(markets, cat);
+			auto cost = base_cost * pop_size / state.defines.alice_needs_scaling_factor;
+			auto can_spend = adaptive_ve::min<VALUE>(2.f * cost, spend_on_categories);
+			auto depends_on = state.world.consumption_category_get_buy_after(cat).id;
+			auto scales_with = state.world.consumption_category_get_scale_with(cat).id;
+			auto scale = ve::fp_vector{1.f};
+
+			// avoid spending when we depend on not fulfilled category
+			if(depends_on && depends_on.index() < (int)result.per_consumption_category.size()) {
+				auto base_scale = result.per_consumption_category[depends_on.index()].satisfied_with_money_ratio;
+				base_scale = adaptive_ve::min<VALUE>(base_scale , 1.f);
+				if(scales_with) {
+					auto weight = state.world.market_get_local_consumption_weights(markets, scales_with.index() + depends_on.index() * state.world.commodity_size());
+					// for example, if we don't buy cars for transportation, don't buy fuel
+					can_spend = can_spend * base_scale * weight;
+					scale = base_scale * weight;
+				} else {
+					// for example, avoid luxury when starving;
+					can_spend = can_spend * base_scale * base_scale;
+					scale = base_scale * base_scale;
+				}
+			}
+
+#ifndef NDEBUG
+			ve::apply(
+				[](float amount) {
+					assert(std::isfinite(amount) && amount >= 0.f);
+				}, can_spend
+			);
+#endif
+
+			result.per_consumption_category.emplace_back(vectorized_budget_position<VALUE> {
+				.required = cost,
+				.satisfied_with_money_ratio = adaptive_ve::select<BOOL_VALUE, VALUE>(cost == 0.f, 10.f, can_spend / cost),
+				.satisfied_for_free_ratio = 0.f,
+				.spent = can_spend,
+				.demand_scale = 1.f
+			});
+			spend_on_categories = spend_on_categories - can_spend;
+			savings = savings - can_spend;
+			result.spent_total = result.spent_total + can_spend;
+		});
+	}
 
 	VALUE satisfaction = state.world.pop_get_satisfaction(ids);
-
 
 	// ##########
 	// life needs
 	// ##########
 
-	VALUE old_life = pop_demographics::get_life_needs(state, ids);
 	VALUE subsistence = adjusted_subsistence_score<VALUE, decltype(provs)>(state, provs);
 	BOOL_VALUE rgo_worker = state.world.pop_type_get_is_paid_rgo_worker(pop_type);
 	subsistence = adaptive_ve::select<BOOL_VALUE, VALUE>(rgo_worker, subsistence, 0.f);
@@ -460,7 +513,8 @@ void update_consumption(
 	ve::vectorizable_buffer<float, dcon::pop_id>& demand_everyday,
 	ve::vectorizable_buffer<float, dcon::pop_id>& demand_luxury,
 	ve::vectorizable_buffer<float, dcon::pop_id>& demand_paid_education,
-	ve::vectorizable_buffer<float, dcon::pop_id>& subsistence_ratio
+	ve::vectorizable_buffer<float, dcon::pop_id>& subsistence_ratio,
+	std::vector<ve::vectorizable_buffer<float, dcon::pop_id>>& demand_consumption_category
 ) {
 	uint32_t total_commodities = state.world.commodity_size();
 
@@ -519,6 +573,22 @@ void update_consumption(
 		to_bank.set(ids, data.bank_savings.spent);
 		to_investments.set(ids, data.investments.spent);
 
+		state.world.for_each_consumption_category([&](auto cat) {
+			auto scale = data.per_consumption_category[cat.index()].demand_scale;
+			auto demanded_ratio = data.per_consumption_category[cat.index()].satisfied_with_money_ratio;
+#ifndef NDEBUG
+			ve::apply(
+				[](float amount) {
+			assert(std::isfinite(amount) && amount >= 0.f);
+				}, multiplier * scale * demanded_ratio
+			);
+#endif
+			demand_consumption_category[cat.index()].set(
+				ids,
+				multiplier * scale	* demanded_ratio
+			);
+		});
+
 		// we do save savings here because a part of education is given for free
 		// which leads to some part of wealth not being spent most of the time
 		state.world.pop_set_savings(ids, ve::max(0.f, data.remaining_savings));
@@ -567,6 +637,19 @@ void update_consumption(
 				state.world.market_set_life_needs_scale(m, pop_type, old_life + life);
 				state.world.market_set_everyday_needs_scale(m, pop_type, old_everyday + everyday);
 				state.world.market_set_luxury_needs_scale(m, pop_type, old_luxury + luxury);
+
+				state.world.for_each_consumption_category([&](auto cat){
+					auto old = state.world.market_get_demand_per_consumption_category(m, cat);
+					auto to_add = demand_consumption_category[cat.index()].get(pop);
+#ifndef NDEBUG
+					ve::apply(
+						[](float amount) {
+								assert(std::isfinite(amount) && amount >= 0.f);
+						}, old + to_add
+					);
+#endif
+					state.world.market_set_demand_per_consumption_category(m, cat, old + to_add);
+				});
 			});
 		});
 	});
@@ -675,7 +758,34 @@ void update_consumption(
 				register_demand(state, ids, cid, demand_luxury);
 			}
 		}
+		// do the same for new weights
+		state.world.for_each_commodity([&](auto cid) {
+			ve::fp_vector total = 0.f;
+			state.world.for_each_consumption_category([&](auto consumption) {
+				auto index = cid.index() + consumption.index() * state.world.commodity_size();
+				auto w = state.world.market_get_local_consumption_weights(ids, index);
+				auto scale = state.world.market_get_demand_per_consumption_category(ids, consumption);
+				auto base_amount = state.world.consumption_category_get_weights(consumption, cid);
+#ifndef NDEBUG
+				ve::apply(
+					[](float amount) {
+						assert(std::isfinite(amount) && amount >= 0.f);
+					}, scale* w * base_amount
+				);
+#endif
+				total = total + scale * w * base_amount;
+#ifndef NDEBUG
+				ve::apply(
+					[](float amount) {
+						assert(std::isfinite(amount) && amount >= 0.f);
+					}, total
+				);
+#endif
+			});
+			register_demand(state, ids, cid, total);
+		});
 	});
+
 }
 
 float estimate_artisan_income(sys::state const& state, dcon::province_id pid, dcon::pop_type_id ptid, float size) {
@@ -1051,7 +1161,6 @@ void update_income_non_labor(sys::state& state) {
 		auto valid_market = market != dcon::market_id{ };
 		if(
 			!valid_market
-			|| state.world.market_get_stockpile(market, economy::money) <= 0.f
 		) {
 			return;
 		}
@@ -1061,8 +1170,8 @@ void update_income_non_labor(sys::state& state) {
 		auto national_elites_weight = nation_trade_tokens.get(nation);
 		auto local_weight = market_trade_tokens.get(market);
 
-		auto total_money = state.world.market_get_stockpile(market, economy::money);
-		auto validated_money =local_weight > min_registered_token_size ? total_money : 0.f;
+		auto total_money = state.world.market_get_pop_dividends(market);
+		auto validated_money = local_weight > min_registered_token_size ? total_money : 0.f;
 
 		auto current = nation_trade_money.get(nation);
 		auto to_add = validated_money * local_province_weight * national_elites_weight / (local_weight + 1.f);
@@ -1108,18 +1217,17 @@ void update_income_non_labor(sys::state& state) {
 			ve::apply([](float v) { assert(std::isfinite(v) && v >= 0); }, income);
 			from_rent = income * expected_share;
 #endif // !NDEBUG
-			total_income = total_income + income;
+			total_income = total_income + income * expected_share;
 		}
 
 		{
 			auto candidates = ve::select(valid_market, market_trade_tokens.get(market), 0.f);
-			auto total_money = ve::select(valid_market && state.world.market_get_stockpile(market, economy::money) > 0, state.world.market_get_stockpile(market, economy::money), 0.f);
+			auto total_money = ve::select(valid_market, state.world.market_get_pop_dividends(market), 0.f);
 			auto income = ve::select(candidates > min_registered_token_size, total_money / candidates * size, 0.f);
 #ifndef NDEBUG
 			ve::apply([](float v) { assert(std::isfinite(v) && v >= 0); }, income);
 			from_market = income * expected_share;
 #endif // !NDEBUG
-
 			total_income = total_income + income;
 		}
 
@@ -1148,7 +1256,7 @@ void update_income_non_labor(sys::state& state) {
 			from_rgo = income * expected_share;
 #endif // !NDEBUG
 
-			total_income = total_income + income;
+			total_income = total_income + income * expected_share;
 		}
 
 		{
@@ -1159,7 +1267,7 @@ void update_income_non_labor(sys::state& state) {
 			ve::apply([](float v) { assert(std::isfinite(v) && v >= 0); }, income);
 			from_factories = income * expected_share;
 #endif // !NDEBUG
-			total_income = total_income + income;
+			total_income = total_income + income * expected_share;
 		}
 
 		auto initial_savings = state.world.pop_get_savings(pop_vector);
@@ -1167,7 +1275,7 @@ void update_income_non_labor(sys::state& state) {
 		ve::apply([](float v) { assert(std::isfinite(v) && v >= 0); }, total_income);
 		auto total = from_rgo + from_rent + from_market + from_factories + from_market_national;
 #endif // !NDEBUG
-		state.world.pop_set_savings(pop_vector, initial_savings + total_income * expected_share);
+		state.world.pop_set_savings(pop_vector, initial_savings + total_income);
 	});
 
 	/*
@@ -1177,9 +1285,18 @@ void update_income_non_labor(sys::state& state) {
 	*/
 
 	state.world.execute_serial_over_market([&](auto mid_vector){
+		auto area = state.world.market_get_zone_from_local_market(mid_vector);
+		auto nation = state.world.state_instance_get_nation_from_state_ownership(area);
+
 		auto trade_tokens = market_trade_tokens.get(mid_vector);
-		auto current = state.world.market_get_stockpile(mid_vector, economy::money);
-		state.world.market_set_stockpile(mid_vector, economy::money, ve::select(current > 0.f && trade_tokens > min_registered_token_size, current * (1.f - expected_share), current));
+		auto global_trade_tokens = nation_trade_tokens.get(nation);
+
+		auto current = state.world.market_get_pop_dividends(mid_vector);
+		state.world.market_set_pop_dividends(mid_vector, ve::select(
+			(trade_tokens > min_registered_token_size) || (global_trade_tokens > min_registered_token_size),
+			0.f,
+			current
+		));
 	});
 
 	state.world.execute_parallel_over_province([&](auto pid_vector){
@@ -1786,6 +1903,31 @@ float estimate_pop_demand_internal_luxury(
 		* invention_factor;
 }
 
+float estimate_pop_demand_internal_category(
+	sys::state const& state, dcon::market_id m, dcon::consumption_category_id cat, dcon::commodity_id c, dcon::pop_id pop,
+	pops::vectorized_pops_budget<float>& budget
+) {
+	auto total = budget.per_consumption_category[cat.index()].demand_scale
+		* budget.per_consumption_category[cat.index()].satisfied_with_money_ratio
+		* state.world.market_get_local_consumption_weights(m, c.index() + cat.index() * state.world.commodity_size())
+		* state.world.consumption_category_get_weights(cat, c);
+
+	auto pop_size = state.world.pop_get_size(pop);
+	return total * pop_size / state.defines.alice_needs_scaling_factor;
+}
+float estimate_pop_spending_category(sys::state const& state, dcon::consumption_category_id cat, dcon::pop_id pop, dcon::commodity_id cid) {
+	auto pid = state.world.pop_get_province_from_pop_location(pop);
+	auto zone = state.world.province_get_state_membership(pid);
+	auto market = state.world.state_instance_get_market_from_local_market(zone);
+	auto budget = prepare_pop_budget(state, pop);
+	auto demand = estimate_pop_demand_internal_category(
+		state, market, cat, cid, pop, budget
+	);
+	auto actually_bought = state.world.market_get_actual_probability_to_buy(market, cid);
+	auto cost = economy::price(state, market, cid);
+	return demand * actually_bought * cost;
+}
+
 float estimate_pop_spending_life(sys::state const& state, dcon::pop_id pop, dcon::commodity_id cid) {
 	auto pid = state.world.pop_get_province_from_pop_location(pop);
 	auto nation = state.world.province_get_nation_from_province_ownership(pid);
@@ -1937,6 +2079,12 @@ float estimate_pops_consumption(sys::state const& state, dcon::commodity_id c, d
 		auto consumption_luxury = pops::estimate_pop_demand_internal_luxury(
 			state, c, pop, budget, luxury_mul, weight_luxury, invention_factor
 		);
+		state.world.for_each_consumption_category([&](auto cat) {
+			auto categories = pops::estimate_pop_demand_internal_category(
+				state, market, cat, c, pop, budget
+			);
+			total = total + categories;
+		});
 
 		total += consumption_life + consumption_everyday + consumption_luxury;
 	});
