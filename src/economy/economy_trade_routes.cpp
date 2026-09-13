@@ -18,6 +18,103 @@
 
 namespace economy {
 
+// value in [0, 1] range
+// 0 means that trade profit due to price difference is pocketed by exporters
+// 1 means that trade profit due to price difference is pocketed by importers
+constexpr inline float import_profit_priority = 0.05f;
+
+//constexpr inline float buy_optimism = 0.2f;
+//constexpr inline float sell_optimism = 0.2f;
+
+template<typename TRADE_ROUTE>
+auto trade_route_effect_of_scale(sys::state& state, TRADE_ROUTE trade_route) {
+	using MARKET = convert_value_type<TRADE_ROUTE, dcon::trade_route_id, dcon::market_id>;
+	using VALUE = typename std::conditional_t<ve::is_vector_type_s<TRADE_ROUTE>::value, ve::fp_vector, float>;
+	MARKET A = ve::apply([&](auto route) {
+		return state.world.trade_route_get_connected_markets(route, 0);
+	}, trade_route);
+	MARKET B = ve::apply([&](auto route) {
+		return state.world.trade_route_get_connected_markets(route, 1);
+	}, trade_route);
+
+	VALUE cargo = 0.f;
+	state.world.for_each_commodity([&](auto cid) {
+		VALUE volume = state.world.trade_route_get_volume(trade_route, cid);
+		MARKET origin = ve::select(volume > 0.f, A, B);
+		cargo = cargo + adaptive_ve::abs(volume) * state.world.market_get_actual_probability_to_buy(origin, cid);;
+	});
+	return adaptive_ve::max<VALUE>(
+		trade_effect_of_scale_lower_bound,
+		1.f - cargo * effect_of_transportation_scale
+	);
+}
+
+
+// US3AC2 Labour demand for a single trade route
+float trade_route_labour_demand(sys::state& state, dcon::trade_route_id trade_route, dcon::province_id A_capital, dcon::province_id B_capital) {
+	auto cargo = 0.f;
+	state.world.for_each_commodity([&](auto cid) {
+		cargo = cargo + std::abs(state.world.trade_route_get_volume(trade_route, cid));
+	});
+	auto effect_of_scale = std::max(
+		trade_effect_of_scale_lower_bound,
+		1.f - cargo * effect_of_transportation_scale
+	);
+	auto total_demanded_labor = cargo * effect_of_scale
+		* state.world.trade_route_get_distance(trade_route)
+		/ trade_distance_covered_by_pair_of_workers_per_unit_of_good;
+	assert(std::isfinite(total_demanded_labor));
+	return total_demanded_labor;
+}
+
+// US3AC2 Calculate labour demand for trade routes between markets
+float transportation_between_markets_labor_demand(sys::state& state, dcon::market_id market) {
+
+	auto total_demanded_labour = 0.f;
+
+	for(auto route : state.world.market_get_trade_route(market)) {
+		auto A = state.world.trade_route_get_connected_markets(route, 0);
+		auto B = state.world.trade_route_get_connected_markets(route, 1);
+
+		auto A_capital = state.world.state_instance_get_capital(state.world.market_get_zone_from_local_market(A));
+		auto B_capital = state.world.state_instance_get_capital(state.world.market_get_zone_from_local_market(B));
+
+		total_demanded_labour += trade_route_labour_demand(state, route, A_capital, B_capital);
+	}
+
+	return total_demanded_labour;
+}
+
+
+// US3AC3 Calculate labour demand for trade inside the market
+float transportation_inside_market_labor_demand(sys::state& state, dcon::market_id market, dcon::province_id capital) {
+	auto base_cargo_transport_demand = 0.f;
+
+	state.world.for_each_commodity([&](auto commodity) {
+		state.world.market_for_each_trade_route(market, [&](auto trade_route) {
+			auto current_volume = state.world.trade_route_get_volume(trade_route, commodity);
+			auto origin =
+				current_volume > 0.f
+				? state.world.trade_route_get_connected_markets(trade_route, 0)
+				: state.world.trade_route_get_connected_markets(trade_route, 1);
+			auto target =
+				current_volume <= 0.f
+				? state.world.trade_route_get_connected_markets(trade_route, 0)
+				: state.world.trade_route_get_connected_markets(trade_route, 1);
+
+			//auto sat = state.world.market_get_direct_demand_satisfaction(origin, commodity);
+			base_cargo_transport_demand += std::abs(current_volume);
+		});
+	});
+
+	// auto soft_transport_demand_limit = state.world.market_get_max_throughput(market);
+	//if(base_cargo_transport_demand > soft_transport_demand_limit) {
+	//	base_cargo_transport_demand = base_cargo_transport_demand * base_cargo_transport_demand / soft_transport_demand_limit;
+	//}
+
+	return base_cargo_transport_demand;
+}
+
 void make_trade_volume_tooltip(
 	sys::state& state,
 	text::columnar_layout& contents,
@@ -28,7 +125,7 @@ void make_trade_volume_tooltip(
 	auto prediction = predict_trade_route_volume_change(state, route, cid);
 
 	auto multiplier = 1.f;
-	auto B = state.world.trade_route_get_target(route);
+	auto B = state.world.trade_route_get_connected_markets(route, 1);
 	if(B == point_of_view) {
 		multiplier = -1.f;
 	}
@@ -57,27 +154,17 @@ void make_trade_volume_tooltip(
 		text::variable_type::val, text::fp_two_places{ multiplier * prediction.profit_score }
 	);
 
-	text::add_line(state, contents, "trade_route_volume_transport_cost",
-		text::variable_type::val, text::format_money( prediction.transport_cost_per_unit )
-	);
-	text::add_line(state, contents, "trade_route_volume_export_price",
-		text::variable_type::val, text::format_money(prediction.export_price)
-	);
-	text::add_line(state, contents, "trade_route_volume_import_price",
-		text::variable_type::val, text::format_money(prediction.import_price)
+	text::add_line(state, contents, "trade_route_volume_profit_score_export",
+		text::variable_type::val, text::fp_two_places{ prediction.export_profit[this_id] / prediction.export_price[this_id] },
+		text::variable_type::x, text::fp_two_places{ prediction.export_profit[this_id] },
+		text::variable_type::y, text::fp_two_places{ prediction.export_price[this_id] }
 	);
 
-	//text::add_line(state, contents, "trade_route_volume_profit_score_export",
-	//	text::variable_type::val, text::fp_two_places{ prediction.export_profit[this_id] / prediction.export_price[this_id] },
-	//	text::variable_type::x, text::fp_two_places{ prediction.export_profit[this_id] },
-	//	text::variable_type::y, text::fp_two_places{ prediction.export_price[this_id] }
-	//);
-
-	//text::add_line(state, contents, "trade_route_volume_profit_score_import",
-	//	text::variable_type::val, text::fp_two_places{ -prediction.export_profit[1 - this_id] / prediction.export_price[1 - this_id] },
-	//	text::variable_type::x, text::fp_two_places{ -prediction.export_profit[1 - this_id] },
-	//	text::variable_type::y, text::fp_two_places{ prediction.export_price[1 - this_id] }
-	//);
+	text::add_line(state, contents, "trade_route_volume_profit_score_import",
+		text::variable_type::val, text::fp_two_places{ -prediction.export_profit[1 - this_id] / prediction.export_price[1 - this_id] },
+		text::variable_type::x, text::fp_two_places{ -prediction.export_profit[1 - this_id] },
+		text::variable_type::y, text::fp_two_places{ prediction.export_price[1 - this_id] }
+	);
 
 	text::add_line(state, contents, "trade_route_volume_base_change",
 		text::variable_type::val, text::fp_two_places{ multiplier * prediction.base_change },
@@ -86,21 +173,6 @@ void make_trade_volume_tooltip(
 
 	text::add_line(state, contents, "trade_route_volume_expansion_multiplier",
 		text::variable_type::val, text::fp_two_places{ prediction.expansion_multiplier }
-	);
-	text::add_line(state, contents, "trade_route_volume_transport_availability",
-		text::variable_type::val, text::fp_two_places{ prediction.transport_availability }
-	);
-	text::add_line(state, contents, "trade_route_volume_budget_availability",
-		text::variable_type::val, text::fp_two_places{ prediction.import_ratio }
-	);
-	text::add_line(state, contents, "trade_route_volume_risk",
-		text::variable_type::val, text::fp_two_places{ prediction.risk }
-	);
-	text::add_line(state, contents, "trade_route_confidence_export",
-		text::variable_type::val, text::fp_two_places{ prediction.export_price_confidence }
-	);
-	text::add_line(state, contents, "trade_route_confidence_import",
-		text::variable_type::val, text::fp_two_places{ prediction.import_price_confidence }
 	);
 
 	text::add_line(state, contents, "trade_route_volume_decay",
@@ -164,16 +236,16 @@ trade_route_volume_change_reasons predict_trade_route_volume_change(
 	sys::state const& state, dcon::trade_route_id route, dcon::commodity_id cid
 ) {
 	trade_route_volume_change_reasons result{
-		.export_price = 0.f,
-		.import_price = 0.f,
-		.export_profit = 0.f,
+		.export_price = { 0.f, 0.f },
+		.import_price = { 0.f, 0.f },
+		.export_profit = { 0.f, 0.f },
 
 		.trade_blocked = false,
 		.commodity_is_not_tradable = false
 	};
 
-	auto A = state.world.trade_route_get_origin(route);
-	auto B = state.world.trade_route_get_target(route);
+	auto A = state.world.trade_route_get_connected_markets(route, 0);
+	auto B = state.world.trade_route_get_connected_markets(route, 1);
 	auto s_A = state.world.market_get_zone_from_local_market(A);
 	auto s_B = state.world.market_get_zone_from_local_market(B);
 	auto formal_n_A = state.world.state_instance_get_nation_from_state_ownership(s_A);
@@ -201,8 +273,8 @@ trade_route_volume_change_reasons predict_trade_route_volume_change(
 	auto market_leader_B = nations::get_market_leader(state, controller_capital_B);
 
 	// Equal/unequal trade treaties
-	auto A_is_open_to_B = !state.world.trade_route_get_is_tariff_applied_origin(route);
-	auto B_is_open_to_A = !state.world.trade_route_get_is_tariff_applied_target(route);
+	auto A_is_open_to_B = !state.world.trade_route_get_is_tariff_applied_0(route);
+	auto B_is_open_to_A = !state.world.trade_route_get_is_tariff_applied_1(route);
 
 	auto port_occupied_A = military::are_at_war(state, controller_capital_A, controller_port_A);
 	auto port_occupied_B = military::are_at_war(state, controller_capital_B, controller_port_B);
@@ -217,6 +289,7 @@ trade_route_volume_change_reasons predict_trade_route_volume_change(
 	auto is_B_civ = state.world.nation_get_is_civilized(controller_capital_B);
 
 	auto is_sea_route = state.world.trade_route_get_is_sea_route(route);
+	auto is_land_route = state.world.trade_route_get_is_land_route(route);
 	auto same_nation = controller_capital_A == controller_capital_B;
 
 	// US3AC7. Ban international sea routes or international land routes based on the corresponding modifiers
@@ -227,7 +300,7 @@ trade_route_volume_change_reasons predict_trade_route_volume_change(
 	auto A_bans_land_trade = state.world.nation_get_modifier_values(controller_capital_A, sys::national_mod_offsets::disallow_land_trade) > 0.f;
 	auto B_bans_land_trade = state.world.nation_get_modifier_values(controller_capital_B, sys::national_mod_offsets::disallow_land_trade) > 0.f;
 	auto land_trade_banned = A_bans_land_trade || B_bans_land_trade;
-	auto trade_banned = (is_sea_route && sea_trade_banned && !same_nation) || (!is_sea_route && land_trade_banned && !same_nation);
+	auto trade_banned = (is_sea_route && sea_trade_banned && !same_nation) || (is_land_route && land_trade_banned && !same_nation);
 
 	is_sea_route = is_sea_route && !is_A_blockaded && !is_B_blockaded;
 
@@ -250,34 +323,53 @@ trade_route_volume_change_reasons predict_trade_route_volume_change(
 	B_joins_sphere_wide_embargo = B_has_embargo || B_joins_sphere_wide_embargo;
 
 	// US3AC13
-	auto merchant_cut = same_nation ? economy::merchant_cut_domestic : economy::merchant_cut_foreign;
+	auto merchant_cut = 1.f + (same_nation ? economy::merchant_cut_domestic : economy::merchant_cut_foreign);
 
 	// US3AC14
-	auto export_tariff = (same_nation || A_is_open_to_B) ? 0.f : effective_tariff_export_rate(state, controller_capital_A, A);
-	auto import_tariff = (same_nation || B_is_open_to_A) ? 0.f : effective_tariff_import_rate(state, controller_capital_B, B);
+	auto import_tariff_A = (same_nation || A_is_open_to_B) ? 0.f : effective_tariff_import_rate(state, controller_capital_A, A);
+	auto export_tariff_A = (same_nation || A_is_open_to_B) ? 0.f : effective_tariff_export_rate(state, controller_capital_A, A);
+	auto import_tariff_B = (same_nation || B_is_open_to_A) ? 0.f : effective_tariff_import_rate(state, controller_capital_B, B);
+	auto export_tariff_B = (same_nation || B_is_open_to_A) ? 0.f : effective_tariff_export_rate(state, controller_capital_B, B);
 
-	auto distance = state.world.trade_route_get_distance_km(route);
-	auto trade_good_loss_mult = std::max(0.f, 1.f - trade_goods_lost_per_km * distance);
+	auto wage_A = state.world.province_get_labor_price(capital_A, labor::no_education);
+	auto wage_B = state.world.province_get_labor_price(capital_B, labor::no_education);
+
+	auto distance = invalid_trade_route_distance;
+	auto land_distance = state.world.trade_route_get_land_distance(route);
+	auto sea_distance = state.world.trade_route_get_sea_distance(route);
+
+	distance = is_land_route ? land_distance : distance;
+	distance = is_sea_route ? sea_distance : distance;
+
+	auto trade_good_loss_mult = std::max(0.f, 1.f - trade_loss_per_distance_unit * distance);
 
 	auto current_volume = state.world.trade_route_get_volume(route, cid);
-	result.current_volume = current_volume;
+	auto absolute_volume = std::abs(current_volume);
+	auto effect_of_scale = std::max(trade_effect_of_scale_lower_bound, 1.f - absolute_volume * effect_of_transportation_scale);
 
-	auto owner = state.world.trade_route_get_owner(route);
+	// US3AC2 we assume that 2 uneducated persons (1 from each market) can transport 1 unit of goods along path of 1 effective day length
+	// we do it this way to avoid another assymetry in calculations
 
-	auto transport_cost_per_distance_weight = state.world.market_get_land_transportation_price(owner);
-	if(is_sea_route) {
-		transport_cost_per_distance_weight = state.world.market_get_naval_transportation_price(owner);
-	}
+	auto transport_cost_A = is_land_route ? wage_A : 0.f;
+	auto transport_cost_B = is_land_route ? wage_B : 0.f;
 
-	auto transport_cost_per_weight = distance * transport_cost_per_distance_weight;
+	auto port_capacity = 0.f;
 
-	result.transport_cost_per_unit = transport_cost_per_weight;
+	transport_cost_A = is_sea_route ? estimate_port_service_price(state, s_A) : transport_cost_A;
+	transport_cost_B = is_sea_route ? estimate_port_service_price(state, s_B) : transport_cost_B;
+
+	auto transport_cost =
+		distance
+		/ trade_distance_covered_by_pair_of_workers_per_unit_of_good
+		* (transport_cost_A + transport_cost_B) * effect_of_scale;
 
 	result.trade_blocked = at_war
 		|| A_joins_sphere_wide_embargo
 		|| B_joins_sphere_wide_embargo
 		|| trade_banned
-		|| !state.world.trade_route_is_valid(route);
+		|| !state.world.trade_route_is_valid(route)
+		|| (!is_sea_route && !is_land_route);
+
 
 	result.commodity_is_not_tradable =
 		state.world.commodity_get_money_rgo(cid)
@@ -287,11 +379,36 @@ trade_route_volume_change_reasons predict_trade_route_volume_change(
 		state.world.commodity_get_rgo_amount(cid) > 0.f
 		&& !state.world.commodity_get_actually_exists_in_nature(cid);
 
-	auto price_export_adjusted = price(state, A, cid) * (1.f + export_tariff + merchant_cut);
-	result.export_price = price_export_adjusted;
+	//if(!state.world.commodity_get_is_available_from_start(cid)) {
+	//	auto unlocked_A = state.world.nation_get_unlocked_commodities(n_A, cid);
+	//	auto unlocked_B = state.world.nation_get_unlocked_commodities(n_B, cid);
+	//	result.commodity_is_not_discovered = result.commodity_is_not_discovered
+	//		|| (!unlocked_A && !unlocked_B);
+	//}
 
-	auto price_import_adjusted = price(state, B, cid) * (1.f - import_tariff) * trade_good_loss_mult;
-	result.import_price = price_import_adjusted;
+
+	auto price_A_export = price(state, A, cid) * (1.f + export_tariff_A);
+	auto price_B_export = price(state, B, cid) * (1.f + export_tariff_B);
+
+	result.export_price[0] = price_A_export;
+	result.export_price[1] = price_B_export;
+
+	auto price_A_import = price(state, A, cid) * (1.f - import_tariff_A) * trade_good_loss_mult;
+	auto price_B_import = price(state, B, cid) * (1.f - import_tariff_B) * trade_good_loss_mult;
+
+	result.import_price[0] = price_A_import;
+	result.import_price[1] = price_B_import;
+
+	auto current_profit_A_to_B = std::max(0.f, price_B_import - price_A_export * merchant_cut - transport_cost);
+	auto current_profit_B_to_A = std::max(0.f, price_A_import - price_B_export * merchant_cut - transport_cost);
+
+	result.export_profit[0] = current_profit_A_to_B;
+	result.export_profit[1] = current_profit_B_to_A;
+
+	auto volume_sign = current_volume == 0.f ? 0 : (current_volume > 0.f ? 1.f : -1.f);
+	auto volume_soft_sign = volume_sign * std::min(absolute_volume, 1.f);
+
+	result.current_volume = current_volume;
 
 	auto c = cid;
 
@@ -318,84 +435,84 @@ trade_route_volume_change_reasons predict_trade_route_volume_change(
 	auto sell_optimism = 0.5f + 0.5f * total_reality_sell.reduce() / (total_count.reduce() + 1.f);
 	auto optimism_confidence = 2.f + 2.f * (total_confidence.reduce() + 1.f) / (total_count.reduce() + 1.f);
 
-	auto expected_to_buy = state.world.market_get_expected_probability_to_buy(A, c);
-	auto expected_to_sell = state.world.market_get_expected_probability_to_sell(B, c);
+	auto expected_to_buy_A = std::min(state.world.market_get_expected_probability_to_buy(A, c) * 2.f, 1.f);
+	auto expected_to_buy_B = std::min(state.world.market_get_expected_probability_to_buy(B, c) * 2.f, 1.f);
+
+	auto expected_to_sell_A = std::min(state.world.market_get_expected_probability_to_sell(A, c) * 2.f, 1.f);
+	auto expected_to_sell_B = std::min(state.world.market_get_expected_probability_to_sell(B, c) * 2.f, 1.f);
 
 	auto pessimism_confidence_A = 0.5f * (state.world.market_get_aggregated_demand_history(A, c) + state.world.market_get_aggregated_supply_history(A, c));
 	auto pessimism_confidence_B = 0.5f * (state.world.market_get_aggregated_demand_history(B, c) + state.world.market_get_aggregated_supply_history(B, c));
 
+	auto transport_availability_A = is_land_route ? state.world.province_get_labor_demand_satisfaction(capital_A, labor::no_education) : 0.f;
+	auto transport_availability_B = is_land_route ? state.world.province_get_labor_demand_satisfaction(capital_B, labor::no_education) : 0.f;
+
+	transport_availability_A = is_sea_route ? 1.f : transport_availability_A;
+	transport_availability_B = is_sea_route ? 1.f : transport_availability_B;
+
+	auto transport_availability = std::min(transport_availability_A, transport_availability_B);
+
 	auto sold_boundary = stockpile_to_supply / (stockpile_spoilage + stockpile_to_supply);
 
-	auto confidence_export = std::max(0.01f, state.world.market_get_price_confidence(A, c));
-	auto confidence_import = std::max(0.01f, state.world.market_get_price_confidence(B, c));
+	auto spend_A_to_B = (price_A_export * merchant_cut + transport_cost * effect_of_scale);
+	auto spend_B_to_A = (price_B_export * merchant_cut + transport_cost * effect_of_scale);
 
-	result.export_price_confidence = confidence_export;
-	result.import_price_confidence = confidence_import;
-
-	auto price_export = price(state, A, c) / confidence_export;
-	auto price_import = price(state, B, c) * confidence_import;
-
-	auto transport_availability = is_sea_route
-		? state.world.market_get_naval_transportation_demand_satisfaction(owner)
-		: state.world.market_get_land_transportation_demand_satisfaction(owner);
-
-	auto spend = price_export * merchant_cut + transport_cost_per_weight;
-
-	auto sell_rate_perception_B = (optimism_confidence * std::max(expected_to_sell, sell_optimism) + pessimism_confidence_B * expected_to_sell);
-	auto buy_rate_perception_A = (optimism_confidence * std::max(expected_to_buy, buy_optimism) + pessimism_confidence_A * expected_to_buy);
-	auto buy_transport_perception = std::min(1.f, (economy::numerical::employment_unit::epsilon / (1.f + current_volume) + transport_availability * 2.f));
+	auto sell_rate_perception_A = (optimism_confidence * std::max(expected_to_sell_A, sell_optimism) + pessimism_confidence_A * expected_to_sell_A);
+	auto sell_rate_perception_B = (optimism_confidence * std::max(expected_to_sell_B, sell_optimism) + pessimism_confidence_B * expected_to_sell_B);
+	auto buy_rate_perception_A = (optimism_confidence * std::max(expected_to_buy_A, buy_optimism) + pessimism_confidence_A * expected_to_buy_A);
+	auto buy_rate_perception_B = (optimism_confidence * std::max(expected_to_buy_B, buy_optimism) + pessimism_confidence_B * expected_to_buy_B);
+	auto buy_transport_perception = std::min(1.f, (economy::numerical::employment_unit::epsilon / (1.f + absolute_volume) + transport_availability * 2.f));
 
 	auto perception_divisor = (optimism_confidence + pessimism_confidence_B) * (optimism_confidence + pessimism_confidence_A);
 
-	auto earn = price_import * sold_boundary * sell_rate_perception_B * buy_rate_perception_A / perception_divisor * buy_transport_perception;
-
-	result.export_profit = earn - spend;
-
-	auto earn_per_unit = price_import * trade_good_loss_mult;
-	auto pay_per_unit = price_export * (1.f + export_tariff + merchant_cut) + price_import * import_tariff + transport_cost_per_weight;
+	auto earn_A_to_B = price_B_import * sold_boundary * sell_rate_perception_B * buy_rate_perception_A / perception_divisor * buy_transport_perception;
+	auto earn_B_to_A = price_A_import * sold_boundary * sell_rate_perception_A * buy_rate_perception_B / perception_divisor * buy_transport_perception;
 
 
-	auto budget_scale = state.world.market_get_trade_house_budget_import_scale(B);
+	auto current_sum = state.world.trade_route_get_stabilization_volume(route, c);
+	auto current_A_to_B = (current_sum + current_volume) / 2.f;
+	auto current_B_to_A = (current_sum - current_volume) / 2.f;
 
-	//auto perception_divisor_origin = (optimism_confidence.get(c) + pessimism_confidence_origin);
-	//auto perception_divisor_target = (optimism_confidence.get(c) + pessimism_confidence_target);
-	//auto perception_divisor = perception_divisor_origin * perception_divisor_target;
+	auto diff_A_to_B = 2.f * (earn_A_to_B - spend_A_to_B) / (earn_A_to_B + economy::price_properties::commodity::min);
+	auto diff_A_to_B_clamped = diff_A_to_B;//std::max(-1.f, std::min(1.f, diff_A_to_B));
+	auto change_A_to_B = (current_A_to_B * 0.002f + 0.002f) * diff_A_to_B_clamped;
 
-	//auto earn_expectation = earn_per_unit * sold_boundary * sell_rate_perception * buy_rate_perception / perception_divisor;
-
-	auto budget = 1.f + state.world.market_get_total_earn(owner);
-	//auto risk = std::min(1.f, budget * expected_to_sell == 0.f ? 1.f : (economy::price_properties::commodity::min + price_export) / (budget * 0.01f));
-	auto risk = std::min(1.f, budget * 0.01f / (economy::price_properties::commodity::min + price_export));
-
-	auto hard_limit = transport_availability;
-	auto soft_limit = expected_to_sell * expected_to_buy;
-	auto change_multiplier =
-		std::max(0.f, (budget_scale - 0.5f) * 2.f)
-		* std::max(0.f, (hard_limit - 0.9f) / 0.1f)
-		* std::max(0.f, (soft_limit - 0.9f) / 0.1f)
-		* risk;
-	auto decay = std::max(0.999f, std::min(1.f, 0.1f + budget_scale * hard_limit));
+	auto diff_B_to_A = 2.f * (earn_B_to_A - spend_B_to_A) / (earn_B_to_A + economy::price_properties::commodity::min);
+	auto diff_B_to_A_clamped = diff_B_to_A;//std::max(-1.f, std::min(1.f, diff_B_to_A));
+	auto change_B_to_A = (current_B_to_A * 0.002f + 0.002f) * diff_B_to_A_clamped;
 
 
-	auto diff = 2.f * (earn_per_unit - pay_per_unit) / (earn_per_unit + economy::price_properties::commodity::min);
-	auto base_change = (current_volume * 0.0005f + 0.001f) * diff;
-	auto change = base_change <= 0.f ? base_change : base_change * change_multiplier;
-	auto next = std::max(0.f, current_volume * decay + change);
+	auto next_A_to_B = std::max(0.f, current_A_to_B * 0.99999f + change_A_to_B);
+	auto next_B_to_A = std::max(0.f, current_B_to_A * 0.99999f + change_B_to_A);
 
-	result.profit_score = diff;
 
-	result.expected_to_buy_in_origin_ratio = expected_to_buy;
+	result.profit_score = diff_A_to_B - diff_B_to_A;
+	auto change = result.profit_score;
 
-	result.expansion_multiplier = change_multiplier;
-	result.import_ratio = budget_scale;
-	result.transport_availability = transport_availability;
-	result.risk = risk;
+	// expand the route slower if goods are not actually bought in origin:
+	// use expectation because it's a behaviour-related update
+	auto bought_A = state.world.market_get_expected_probability_to_buy(A, cid);
+	auto bought_B = state.world.market_get_expected_probability_to_buy(B, cid);
+	auto bought = (current_volume + change) > 0.f ? bought_A : bought_B;
 
-	result.profit = earn - spend;
+	result.expected_to_buy_in_origin_ratio = bought;
 
-	result.base_change = base_change;
-	result.decay = current_volume * (1.f - decay);
-	result.final_change = next;
+	result.expansion_multiplier = 1.f;
+
+	change = change * (current_volume + change) >= 0.f
+		? change * result.expansion_multiplier
+		: change;
+
+	result.profit = 0.f;
+	if(current_profit_A_to_B > 0.f) {
+		result.profit = current_profit_A_to_B;
+	} else if(current_profit_B_to_A > 0.f) {
+		result.profit = current_profit_B_to_A;
+	}
+
+	result.base_change = change_A_to_B - change_B_to_A;
+	result.decay = (current_A_to_B - current_B_to_A) * 0.99999f;
+	result.final_change = next_A_to_B - current_B_to_A + current_B_to_A - next_B_to_A;
 
 	return result;
 }
@@ -406,69 +523,154 @@ void update_trade_routes_volume(
 	ve::vectorizable_buffer<float, dcon::market_id>& export_tariff_buffer,
 	ve::vectorizable_buffer<float, dcon::market_id>& import_tariff_buffer,
 	ve::vectorizable_buffer<dcon::province_id, dcon::state_instance_id>& coastal_capital_buffer,
-	ve::vectorizable_buffer<float, dcon::state_instance_id>& state_port_is_occupied
+	ve::vectorizable_buffer<float, dcon::state_instance_id>& state_port_is_occupied,
+	ve::vectorizable_buffer<float, dcon::market_id>& available_port_capacity,
+	ve::vectorizable_buffer<float, dcon::market_id>& price_port_capacity
 ) {
 
+	// calculate optimism about the ability to buy or sell goods
+
+	auto optimism_buy = state.world.commodity_make_vectorizable_float_buffer();
+	auto optimism_sell = state.world.commodity_make_vectorizable_float_buffer();
+	auto optimism_confidence = state.world.commodity_make_vectorizable_float_buffer();
+
+	state.world.for_each_commodity([&](auto cid){
+		if (ignore_reality) {			
+			optimism_buy.set(cid, 1.f);
+			optimism_sell.set(cid, 1.f);
+			optimism_confidence.set(cid, 1000.f);
+		} else {
+			ve::fp_vector total_count = 0.f;
+			ve::fp_vector total_reality_buy = 0.f;
+			ve::fp_vector total_reality_sell = 0.f;
+			ve::fp_vector total_confidence = 0.f;
+
+			state.world.execute_serial_over_market([&](auto market) {
+				auto valid = ve::apply([&](auto m) {
+					return state.world.market_is_valid(m);
+				}, market);
+				total_count = total_count + ve::select(valid, ve::fp_vector{1.f}, ve::fp_vector{0.f});
+				total_reality_buy = total_reality_buy + ve::select(valid, state.world.market_get_expected_probability_to_buy(market, cid), 0.f);
+				total_reality_sell = total_reality_sell + ve::select(valid, state.world.market_get_expected_probability_to_sell(market, cid), 0.f);
+				total_confidence = total_confidence + ve::select(valid,
+					state.world.market_get_aggregated_supply_history(market, cid)
+					+ state.world.market_get_aggregated_demand_history(market, cid)
+					, 0.f
+				);
+			});
+
+			optimism_buy.set(cid, 0.5f + 0.5f * total_reality_buy.reduce() / (total_count.reduce() + 1.f));
+			optimism_sell.set(cid, 0.5f + 0.5f * total_reality_sell.reduce() / (total_count.reduce() + 1.f));
+			optimism_confidence.set(cid, 2.f + 2.f * (total_confidence + 1.f) / (total_count.reduce() + 1.f));
+		}
+	});
+
+
 	state.world.execute_parallel_over_trade_route([&](auto trade_route) {
-		auto origin = state.world.trade_route_get_origin(trade_route);
-		auto target = state.world.trade_route_get_target(trade_route);
+		auto A = ve::apply([&](auto route) {
+			return state.world.trade_route_get_connected_markets(route, 0);
+			}, trade_route);
 
-		auto owner = state.world.trade_route_get_owner(trade_route);
-		auto budget = 1.f + state.world.market_get_total_earn(owner);
+		auto B = ve::apply([&](auto route) {
+			return state.world.trade_route_get_connected_markets(route, 1);
+		}, trade_route);
 
-		auto s_origin = state.world.market_get_zone_from_local_market(origin);
-		auto s_target = state.world.market_get_zone_from_local_market(target);
+		auto s_A = state.world.market_get_zone_from_local_market(A);
+		auto s_B = state.world.market_get_zone_from_local_market(B);
 
-		auto capital_origin = state.world.state_instance_get_capital(s_origin);
-		auto capital_target = state.world.state_instance_get_capital(s_target);
+		auto capital_A = state.world.state_instance_get_capital(s_A);
+		auto capital_B = state.world.state_instance_get_capital(s_B);
 
-		auto controller_origin = state.world.province_get_nation_from_province_control(capital_origin);
-		auto controller_target = state.world.province_get_nation_from_province_control(capital_target);
+		auto controller_A = state.world.province_get_nation_from_province_control(capital_A);
+		auto controller_B = state.world.province_get_nation_from_province_control(capital_B);
 
-		auto formal_owner_origin = state.world.province_get_nation_from_province_ownership(capital_origin);
-		auto formal_owner_target = state.world.province_get_nation_from_province_ownership(capital_target);
+		auto formal_owner_A = state.world.province_get_nation_from_province_ownership(capital_A);
+		auto formal_owner_B = state.world.province_get_nation_from_province_ownership(capital_B);
 
-		controller_origin = ve::select(controller_origin != dcon::nation_id{ }, controller_origin, formal_owner_origin);
-		controller_target = ve::select(controller_target != dcon::nation_id{ }, controller_target, formal_owner_target);
+		controller_A = ve::select(controller_A != dcon::nation_id{ }, controller_A, formal_owner_A);
+		controller_B = ve::select(controller_B != dcon::nation_id{ }, controller_B, formal_owner_B);
 
-		auto origin_tariff_is_applied = state.world.trade_route_get_is_tariff_applied_origin(trade_route);
-		auto target_tariff_is_applied = state.world.trade_route_get_is_tariff_applied_target(trade_route);
+		auto A_is_open_to_B = !state.world.trade_route_get_is_tariff_applied_0(trade_route);
+		auto B_is_open_to_A = !state.world.trade_route_get_is_tariff_applied_1(trade_route);
 
-		ve::mask_vector is_origin_blockaded = state_port_is_occupied.get(s_origin) > 0.f;
-		ve::mask_vector is_target_blockaded = state_port_is_occupied.get(s_target) > 0.f;
+		ve::mask_vector is_A_blockaded = state_port_is_occupied.get(s_A) > 0.f;
+		ve::mask_vector is_B_blockaded = state_port_is_occupied.get(s_B) > 0.f;
 
 		auto trade_closed = state.world.trade_route_get_is_trade_forbidden(trade_route);
 
-		auto is_origin_civ = state.world.nation_get_is_civilized(controller_origin);
-		auto is_target_civ = state.world.nation_get_is_civilized(controller_target);
-		auto is_sea_route = state.world.trade_route_get_is_sea_route(trade_route);
-		auto blockaded = is_sea_route && (is_origin_blockaded || is_target_blockaded);
-		auto same_nation = controller_origin == controller_target;
-
+		auto is_A_civ = state.world.nation_get_is_civilized(controller_A);
+		auto is_B_civ = state.world.nation_get_is_civilized(controller_B);
+		auto is_sea_route = state.world.trade_route_get_is_sea_route(trade_route) && !is_A_blockaded && !is_B_blockaded;
+		auto is_land_route = state.world.trade_route_get_is_land_route(trade_route);
+		auto same_nation = controller_A == controller_B;
 		// US3AC7 US3AC8 Ban international sea routes or international land routes based on the corresponding modifiers
-		auto origin_bans_sea_trade = state.world.nation_get_modifier_values(controller_origin, sys::national_mod_offsets::disallow_naval_trade) > 0.f;
-		auto target_bans_sea_trade = state.world.nation_get_modifier_values(controller_target, sys::national_mod_offsets::disallow_naval_trade) > 0.f;
-		auto sea_trade_banned = origin_bans_sea_trade || target_bans_sea_trade;
-		auto origin_bans_land_trade = state.world.nation_get_modifier_values(controller_origin, sys::national_mod_offsets::disallow_land_trade) > 0.f;
-		auto target_bans_land_trade = state.world.nation_get_modifier_values(controller_target, sys::national_mod_offsets::disallow_land_trade) > 0.f;
-		auto land_trade_banned = origin_bans_land_trade || target_bans_land_trade;
-		auto trade_banned = (is_sea_route && sea_trade_banned && !same_nation) || (!is_sea_route && land_trade_banned && !same_nation);
+		auto A_bans_sea_trade = state.world.nation_get_modifier_values(controller_A, sys::national_mod_offsets::disallow_naval_trade) > 0.f;
+		auto B_bans_sea_trade = state.world.nation_get_modifier_values(controller_B, sys::national_mod_offsets::disallow_naval_trade) > 0.f;
+		auto sea_trade_banned = A_bans_sea_trade || B_bans_sea_trade;
+		auto A_bans_land_trade = state.world.nation_get_modifier_values(controller_A, sys::national_mod_offsets::disallow_land_trade) > 0.f;
+		auto B_bans_land_trade = state.world.nation_get_modifier_values(controller_B, sys::national_mod_offsets::disallow_land_trade) > 0.f;
+		auto land_trade_banned = A_bans_land_trade || B_bans_land_trade;
+		auto trade_banned = (is_sea_route && sea_trade_banned && !same_nation) || (is_land_route && land_trade_banned && !same_nation);
 
-		auto merchant_cut = ve::select(same_nation, ve::fp_vector{ economy::merchant_cut_domestic }, ve::fp_vector{ economy::merchant_cut_foreign });
+		auto merchant_cut = ve::select(same_nation, ve::fp_vector{ 1.f + economy::merchant_cut_domestic }, ve::fp_vector{ 1.f + economy::merchant_cut_foreign });
 
-		auto export_tariff = ve::select(same_nation || !origin_tariff_is_applied, ve::fp_vector{ 0.f }, export_tariff_buffer.get(origin));
-		auto import_tariff = ve::select(same_nation || !target_tariff_is_applied, ve::fp_vector{ 0.f }, import_tariff_buffer.get(target));
+		auto import_tariff_effect_A = 1.f - ve::select(same_nation || A_is_open_to_B, ve::fp_vector{ 0.f }, import_tariff_buffer.get(A));
+		auto export_tariff_effect_A = 1.f + ve::select(same_nation || A_is_open_to_B, ve::fp_vector{ 0.f }, export_tariff_buffer.get(A));
+		auto import_tariff_effect_B = 1.f - ve::select(same_nation || B_is_open_to_A, ve::fp_vector{ 0.f }, import_tariff_buffer.get(B));
+		auto export_tariff_effect_B = 1.f + ve::select(same_nation || B_is_open_to_A, ve::fp_vector{ 0.f }, export_tariff_buffer.get(B));
 
-		ve::fp_vector distance = state.world.trade_route_get_distance_km(trade_route);
+		ve::fp_vector distance = invalid_trade_route_distance;
+		auto land_distance = state.world.trade_route_get_land_distance(trade_route);
+		auto sea_distance = state.world.trade_route_get_sea_distance(trade_route);
+
+		distance = ve::select(is_land_route, land_distance, distance);
+		distance = ve::select(is_sea_route, sea_distance, distance);
+		distance = ve::select(is_land_route && is_sea_route, ve::min(sea_distance, land_distance), distance);
+
+		ve::apply([&](auto value) {
+			assert(std::isfinite(value));
+		}, distance);
+
+		state.world.trade_route_set_distance(trade_route, distance);
 
 		// US3AC18
-		auto trade_good_loss_mult = ve::max(0.f, 1.f - trade_goods_lost_per_km * distance);
+		auto trade_good_loss_mult = ve::max(0.f, 1.f - trade_loss_per_distance_unit * distance);
 
-		auto transport_cost = distance * ve::select(is_sea_route, state.world.market_get_naval_transportation_price(owner), state.world.market_get_land_transportation_price(owner));
+		// US3AC2. we assume that 2 uneducated persons (1 from each market) can transport 1 unit of goods along path of 1 effective day length
+		// we do it this way to avoid another assymetry in calculations
 
-		auto reset_route =
-			trade_closed || blockaded || trade_banned
-			|| !ve::apply([&](auto r) { return state.world.trade_route_is_valid(r); }, trade_route);
+		auto transport_availability_A = ve::select(is_land_route, ve::fp_vector{ state.world.province_get_labor_demand_satisfaction(capital_A, labor::no_education) }, ve::fp_vector{ 0.f });
+		auto transport_availability_B = ve::select(is_land_route, ve::fp_vector{ state.world.province_get_labor_demand_satisfaction(capital_B, labor::no_education) }, ve::fp_vector{ 0.f });
+
+		transport_availability_A = ve::select(is_sea_route, available_port_capacity.get(A), transport_availability_A);
+		transport_availability_B = ve::select(is_sea_route, available_port_capacity.get(B), transport_availability_B);
+
+
+		auto transport_availability = ve::min(transport_availability_A, transport_availability_B);
+
+		if(ignore_reality) {
+			transport_availability = 1.f;
+		}
+
+		auto wage_A = state.world.province_get_labor_price(capital_A, labor::no_education);
+		auto wage_B = state.world.province_get_labor_price(capital_B, labor::no_education);
+
+		auto transport_cost_A = ve::select(is_land_route, wage_A, 0.f);
+		auto transport_cost_B = ve::select(is_land_route, wage_B, 0.f);
+
+		transport_cost_A = ve::select(is_sea_route, price_port_capacity.get(A), transport_cost_A);
+		transport_cost_B = ve::select(is_sea_route, price_port_capacity.get(B), transport_cost_B);
+
+		auto transport_cost =
+			distance
+			/ trade_distance_covered_by_pair_of_workers_per_unit_of_good
+			* (transport_cost_A + transport_cost_B);
+
+		auto reset_route = trade_closed || trade_banned
+			|| !ve::apply([&](auto r) { return state.world.trade_route_is_valid(r); }, trade_route)
+			|| (!is_sea_route && !is_land_route);
+
+		auto effect_of_scale = trade_route_effect_of_scale(state, trade_route);
 
 		for(auto c : state.world.in_commodity) {
 			// US3AC19
@@ -479,34 +681,64 @@ void update_trade_routes_volume(
 				state.world.commodity_get_rgo_amount(c) > 0.f
 				&& !state.world.commodity_get_actually_exists_in_nature(c)
 			) {
-			                continue;
+				continue;
 			}
+
+			// US3AC20.
+			//auto unlocked_A = state.world.nation_get_unlocked_commodities(controller_A, c);
+			//auto unlocked_B = state.world.nation_get_unlocked_commodities(controller_B, c);
 
 			auto reset_route_commodity = reset_route;
 
+			//if(!state.world.commodity_get_is_available_from_start(c)) {
+			//	reset_route_commodity = reset_route_commodity
+			//		|| (!unlocked_A && !unlocked_B);
+			//}
+
 			auto current_volume = state.world.trade_route_get_volume(trade_route, c);
-			auto confidence_export = ve::max(0.01f, state.world.market_get_price_confidence(origin, c));
-			auto confidence_import = ve::max(0.01f, state.world.market_get_price_confidence(target, c));
 
-			auto price_export = ve_price(state, origin, c) / confidence_export;
-			auto price_import = ve_price(state, target, c) * confidence_import;
+			auto absolute_volume = ve::abs(current_volume);
+			auto volume_sign = ve::select(current_volume == 0.f, ve::fp_vector{ 0.f },
+				ve::select(current_volume > 0.f, ve::fp_vector{ 1.f }, ve::fp_vector{ - 1.f })
+			);
+			auto volume_soft_sign = volume_sign * ve::min(absolute_volume, 1.f);
 
-			auto earn_per_unit = price_import * trade_good_loss_mult;
-			auto pay_per_unit = price_export * (1.f + export_tariff + merchant_cut) + price_import * import_tariff + transport_cost;
+			auto price_A_export = ve_price(state, A, c) * export_tariff_effect_A;
+			auto price_B_export = ve_price(state, B, c) * export_tariff_effect_B;
+
+			auto price_A_import = ve_price(state, A, c) * import_tariff_effect_A * trade_good_loss_mult;
+			auto price_B_import = ve_price(state, B, c) * import_tariff_effect_B * trade_good_loss_mult;
 
 			// US3AC21 effect of scale
 			// volume reduces transport costs
 
-			auto expected_to_buy = state.world.market_get_expected_probability_to_buy(origin, c);
-			auto expected_to_sell = state.world.market_get_expected_probability_to_sell(target, c);
+			auto sold_boundary = stockpile_to_supply / (stockpile_spoilage + stockpile_to_supply);
 
-			if(ignore_reality) {
-			                expected_to_buy = ve::min(ve::fp_vector{ 1.f }, expected_to_buy + 0.5f);
-			                expected_to_sell = ve::min(ve::fp_vector{ 1.f }, expected_to_sell + 0.5f);
-			}
+			auto sell_optimism = optimism_sell.get(c);
+			auto buy_optimism = optimism_buy.get(c);
 
 			/*
+			Try overestimating ability to sell and buy to make merchants a bit more brave without encouraging sales when they are zero
+			*/
 
+			auto expected_to_buy_A = ve::min(state.world.market_get_expected_probability_to_buy(A, c) * 2.f, 1.f);
+			auto expected_to_buy_B = ve::min(state.world.market_get_expected_probability_to_buy(B, c) * 2.f, 1.f);
+
+			auto expected_to_sell_A = ve::min(state.world.market_get_expected_probability_to_sell(A, c) * 2.f, 1.f);
+			auto expected_to_sell_B = ve::min(state.world.market_get_expected_probability_to_sell(B, c) * 2.f, 1.f);
+
+			if(ignore_reality) {
+				expected_to_buy_A = 1.f;
+				expected_to_buy_B = 1.f;
+				expected_to_sell_A = 1.f;
+				expected_to_sell_B = 1.f;
+			}
+
+			auto pessimism_confidence_A = 0.5f * (state.world.market_get_aggregated_demand_history(A, c) + state.world.market_get_aggregated_supply_history(A, c));
+			auto pessimism_confidence_B = 0.5f * (state.world.market_get_aggregated_demand_history(B, c) + state.world.market_get_aggregated_supply_history(B, c));
+
+			/*
+			
 			New model of trade update:
 			Assume that there is a segment [0, 1] of traders operating this route.
 			Trader 0 gets 0x of the sales.
@@ -524,31 +756,48 @@ void update_trade_routes_volume(
 
 			*/
 
-			// making it into a hard cap?
-			auto transport_availability = ve::select(is_sea_route, state.world.market_get_naval_transportation_demand_satisfaction(owner), state.world.market_get_land_transportation_demand_satisfaction(owner));
-			auto budget_scale = state.world.market_get_trade_house_budget_import_scale(target);
+			auto spend_A_to_B = (price_A_export * merchant_cut + transport_cost * effect_of_scale);
+			auto spend_B_to_A = (price_B_export * merchant_cut + transport_cost * effect_of_scale);
 
-			auto risk = ve::min(1.f, budget * 0.01f / (economy::price_properties::commodity::min + price_export));
+			auto sell_rate_perception_A = (optimism_confidence.get(c) * ve::max(expected_to_sell_A, sell_optimism) + pessimism_confidence_A * expected_to_sell_A);
+			auto sell_rate_perception_B = (optimism_confidence.get(c) * ve::max(expected_to_sell_B, sell_optimism) + pessimism_confidence_B * expected_to_sell_B);
+			auto buy_rate_perception_A = (optimism_confidence.get(c) * ve::max(expected_to_buy_A, buy_optimism) + pessimism_confidence_A * expected_to_buy_A);
+			auto buy_rate_perception_B = (optimism_confidence.get(c) * ve::max(expected_to_buy_B, buy_optimism) + pessimism_confidence_B * expected_to_buy_B);
+			auto buy_transport_perception = ve::min(1.f, (economy::numerical::employment_unit::epsilon / (1.f + absolute_volume) + transport_availability * 2.f));
 
-			auto hard_limit = transport_availability;
-			auto soft_limit = expected_to_sell * expected_to_buy;
+			auto perception_divisor_A = (optimism_confidence.get(c) + pessimism_confidence_A);
+			auto perception_divisor_B = (optimism_confidence.get(c) + pessimism_confidence_B);
+			auto perception_divisor = perception_divisor_A * perception_divisor_B;
 
-			auto change_multiplier =
-				ve::max(ve::fp_vector{ 0.f }, (budget_scale - 0.5f) * 2.f)
-				* ve::max(ve::fp_vector{ 0.f }, (hard_limit - 0.9f) / 0.1f)
-				* ve::max(ve::fp_vector{ 0.f }, (soft_limit - 0.80f) / 0.2f)
-				* risk;
-			auto decay = ve::max(0.999f, ve::min(1.f, 0.1f + budget_scale * hard_limit));
+			auto earn_A_to_B = price_B_import * sold_boundary * sell_rate_perception_B * buy_rate_perception_A / perception_divisor * buy_transport_perception;
+			auto earn_B_to_A = price_A_import * sold_boundary * sell_rate_perception_A * buy_rate_perception_B / perception_divisor * buy_transport_perception;
 
-			auto diff = 2.f * (earn_per_unit - pay_per_unit) / (earn_per_unit + economy::price_properties::commodity::min);
-			auto change = (current_volume * 0.001f + 0.001f) * diff;
 
-			change = ve::select(change <= 0.f, change, change * change_multiplier);
-			if(ignore_reality) {
-				change = change * 10.f;
-			}
-			auto next = ve::select(reset_route_commodity, 0.f, ve::max(0.f, current_volume * decay + change));
-			state.world.trade_route_set_volume(trade_route, c, next);
+			auto current_sum = state.world.trade_route_get_stabilization_volume(trade_route, c);
+			auto current_A_to_B = (current_sum + current_volume) / 2.f;
+			auto current_B_to_A = (current_sum - current_volume) / 2.f;
+
+
+			auto diff_A_to_B = 2.f * (earn_A_to_B - spend_A_to_B) / (earn_A_to_B + economy::price_properties::commodity::min);
+			auto diff_A_to_B_clamped = diff_A_to_B;//ve::max(-1.f, ve::min(1.f, diff_A_to_B));
+			auto change_A_to_B = (current_A_to_B * 0.002f + 0.002f) * diff_A_to_B_clamped;
+			change_A_to_B = ve::select(change_A_to_B <= 0.f, change_A_to_B, change_A_to_B * ve::max(0.f, (buy_rate_perception_A / perception_divisor_A - 0.2f) / 0.8f));
+
+			auto diff_B_to_A = 2.f * (earn_B_to_A - spend_B_to_A) / (earn_B_to_A + economy::price_properties::commodity::min);
+			auto diff_B_to_A_clamped = diff_B_to_A;//ve::max(-1.f, ve::min(1.f, diff_B_to_A));
+			auto change_B_to_A = (current_B_to_A * 0.002f + 0.002f) * diff_B_to_A_clamped;
+			change_B_to_A = ve::select(change_B_to_A <= 0.f, change_B_to_A, change_B_to_A * ve::max(0.f, (buy_rate_perception_B / perception_divisor_B - 0.2f) / 0.8f));
+
+
+			auto next_A_to_B = ve::select(reset_route_commodity, 0.f, ve::max(0.f, current_A_to_B * 0.99999f + change_A_to_B));
+			auto next_B_to_A = ve::select(reset_route_commodity, 0.f, ve::max(0.f, current_B_to_A * 0.99999f + change_B_to_A));
+
+			state.world.trade_route_set_volume(trade_route, c, next_A_to_B - next_B_to_A);
+			state.world.trade_route_set_stabilization_volume(trade_route, c, next_A_to_B + next_B_to_A);
+
+			//ve::apply([&](auto value) {
+				//assert(std::isfinite(value) && value < 100000.f);
+			//}, state.world.trade_route_get_volume(trade_route, c));
 		}
 	});
 }
@@ -557,34 +806,98 @@ void update_trade_routes_volume(
 void update_trade_routes_consumption(sys::state& state) {
 	auto const total_commodities = state.world.commodity_size();
 
-	// Register trade demand on goods
+	// register trade demand on goods
 	concurrency::parallel_for(uint32_t(0), total_commodities, [&](uint32_t k) {
 		dcon::commodity_id cid{ dcon::commodity_id::value_base_t(k) };
+
 		if(state.world.commodity_get_money_rgo(cid)) {
 			return;
 		}
+
 		state.world.for_each_trade_route([&](auto trade_route) {
-			auto origin = state.world.trade_route_get_origin(trade_route);
 			auto current_volume = state.world.trade_route_get_volume(trade_route, cid);
-			register_demand(state, origin, cid, current_volume);
+			auto origin =
+				current_volume > 0.f
+				? state.world.trade_route_get_connected_markets(trade_route, 0)
+				: state.world.trade_route_get_connected_markets(trade_route, 1);
+			auto target =
+				current_volume <= 0.f
+				? state.world.trade_route_get_connected_markets(trade_route, 0)
+				: state.world.trade_route_get_connected_markets(trade_route, 1);
+
+			auto absolute_volume = std::abs(current_volume);
+
+			register_demand(state, origin, cid, absolute_volume);
 		});
 	});
 
-	// Transportation demand
+	// US3AC2 register trade demand on transportation labor:
+	// money are paid during calculation of trade route profits and actual movement of goods
+
+	auto port_services_buffer = state.world.market_make_vectorizable_float_buffer();
+
 	state.world.for_each_trade_route([&](auto trade_route) {
-		auto owner = state.world.trade_route_get_owner(trade_route);
-		auto distance = state.world.trade_route_get_distance_km(trade_route);
-		state.world.for_each_commodity([&](auto cid){
-			auto volume = state.world.trade_route_get_volume(trade_route, cid);
-			if(state.world.trade_route_get_is_sea_route(trade_route)) {
-				auto demand = state.world.market_get_naval_transportation_demand(owner);
-				state.world.market_set_naval_transportation_demand(owner, demand + volume * distance);
-			} else {
-				auto demand = state.world.market_get_land_transportation_demand(owner);
-				state.world.market_set_land_transportation_demand(owner, demand + volume * distance);
-			}
-		});
+		auto A = state.world.trade_route_get_connected_markets(trade_route, 0);
+		auto B = state.world.trade_route_get_connected_markets(trade_route, 1);
+		auto A_capital = state.world.state_instance_get_capital(state.world.market_get_zone_from_local_market(A));
+		auto B_capital = state.world.state_instance_get_capital(state.world.market_get_zone_from_local_market(B));
+
+		auto total_demanded_labor = trade_route_labour_demand(state, trade_route, A_capital, B_capital);
+		assert(std::isfinite(total_demanded_labor));
+
+		if(state.world.trade_route_get_is_sea_route(trade_route)) {
+			port_services_buffer.set(A, port_services_buffer.get(A) + total_demanded_labor);
+			port_services_buffer.set(B, port_services_buffer.get(B) + total_demanded_labor);
+			assert(std::isfinite(port_services_buffer.get(A)));
+			assert(std::isfinite(port_services_buffer.get(B)));
+		} else {
+			state.world.province_get_labor_demand(A_capital, labor::no_education) += total_demanded_labor;
+			state.world.province_get_labor_demand(B_capital, labor::no_education) += total_demanded_labor;
+			assert(std::isfinite(state.world.province_get_labor_demand(A_capital, labor::no_education)));
+			assert(std::isfinite(state.world.province_get_labor_demand(B_capital, labor::no_education)));
+		}
 	});
+
+	auto port_services_total_weight = state.world.market_make_vectorizable_float_buffer();
+
+	province::for_each_market_province_parallel_over_market(state, [&](dcon::market_id mid, dcon::state_instance_id sid, dcon::province_id pid) {
+		auto local_weight = 1.f / (price_properties::service::epsilon + state.world.province_get_service_price(pid, services::list::port_capacity));
+		port_services_total_weight.set(mid, port_services_total_weight.get(mid) + local_weight);
+	});
+
+	province::for_each_market_province_parallel_over_market(state, [&](dcon::market_id mid, dcon::state_instance_id sid, dcon::province_id pid) {
+		auto local_weight = 1.f / (price_properties::service::epsilon + state.world.province_get_service_price(pid, services::list::port_capacity));
+		auto total_weight = port_services_total_weight.get(mid);
+		auto market_demand = port_services_buffer.get(mid);
+		auto local_demand = state.world.province_get_service_demand_forbidden_public_supply(pid, services::list::port_capacity);
+		state.world.province_set_service_demand_forbidden_public_supply(pid, services::list::port_capacity, local_demand + market_demand * local_weight / total_weight);
+	});
+
+	// US3AC3 register demand on local transportation/accounting due to trade
+	// all trade generates uneducated labor demand for goods transport locally
+	// labor demand satisfaction does not set limits on transportation: it would be way too jumpy
+	// we assume that 1 human could move 100 units of goods daily locally
+
+	/*
+	state.world.for_each_market([&](auto market) {
+		auto capital = state.world.state_instance_get_capital(state.world.market_get_zone_from_local_market(market));
+		auto base_cargo_transport_demand = transportation_inside_market_labor_demand(state, market, capital);
+
+		// auto soft_transport_demand_limit = state.world.market_get_max_throughput(market);
+		//if(base_cargo_transport_demand > soft_transport_demand_limit) {
+		//	base_cargo_transport_demand = base_cargo_transport_demand * base_cargo_transport_demand / soft_transport_demand_limit;
+		//}
+
+		state.world.province_get_labor_demand(capital, labor::no_education) += base_cargo_transport_demand / 100.f;
+		assert(std::isfinite(base_cargo_transport_demand));
+		assert(std::isfinite(state.world.province_get_labor_demand(capital, labor::no_education)));
+		// proceed payments:
+		state.world.market_get_stockpile(market, money) -=
+			base_cargo_transport_demand
+			* state.world.province_get_labor_demand_satisfaction(capital, labor::no_education)
+			* state.world.province_get_labor_price(capital, labor::no_education);
+	});
+	*/
 }
 
 // CAUTION: when we generate trade demand for a good, we promise to pay money to local producers during the next tick
@@ -601,10 +914,26 @@ trade_and_tariff<TRADE_ROUTE> explain_trade_route_commodity_internal(
 	using VALUE = typename std::conditional_t<ve::is_vector_type_s<TRADE_ROUTE>::value, ve::fp_vector, float>;
 	auto current_volume = state.world.trade_route_get_volume(trade_route, cid);
 
-	auto owner = state.world.trade_route_get_owner(trade_route);
+	auto m0 = ve::apply([&](auto route, auto volume) {
+		return state.world.trade_route_get_connected_markets(route, 0);
+	}, trade_route, current_volume);
 
-	auto origin = state.world.trade_route_get_origin(trade_route);
-	auto target = state.world.trade_route_get_target(trade_route);
+
+	auto origin = ve::apply([&](auto route, auto volume) {
+		return volume > 0.f
+			? state.world.trade_route_get_connected_markets(route, 0)
+			: state.world.trade_route_get_connected_markets(route, 1);
+	}, trade_route, current_volume);
+	auto target = ve::apply([&](auto route, auto volume) {
+		return volume > 0.f
+			? state.world.trade_route_get_connected_markets(route, 1)
+			: state.world.trade_route_get_connected_markets(route, 0);
+	}, trade_route, current_volume);
+
+
+	auto origin_is_0 = origin == m0;
+	auto origin_is_1 = !origin_is_0;
+
 
 	auto s_origin = state.world.market_get_zone_from_local_market(origin);
 	auto s_target = state.world.market_get_zone_from_local_market(target);
@@ -627,29 +956,15 @@ trade_and_tariff<TRADE_ROUTE> explain_trade_route_commodity_internal(
 	auto absolute_volume = sat * adaptive_ve::abs(current_volume);
 
 	auto import_amount = absolute_volume * additional_data.loss;
-
-	auto sea_route = state.world.trade_route_get_is_sea_route(trade_route);
-	auto transport_cost = adaptive_ve::select(sea_route, state.world.market_get_naval_transportation_price(owner), state.world.market_get_land_transportation_price(owner));
+	auto transport_cost = additional_data.distance_cost_scaled;
 
 	const VALUE cut_domestic = economy::merchant_cut_domestic;
 	const VALUE cut_foreign = economy::merchant_cut_foreign;
 
-	auto merchant_cut = adaptive_ve::select(actual_n_origin == actual_n_target, cut_domestic, cut_foreign);
+	auto merchant_cut = ve::select(actual_n_origin == actual_n_target, cut_domestic, cut_foreign);
 
-	auto export_tariff = additional_data.export_tariff;
-	auto import_tariff = additional_data.import_tariff;
-
-	auto origin_tariff = price_origin * export_tariff;
-	auto origin_merchant_cut = price_origin * merchant_cut;
-	auto target_tariff = price_target * import_tariff;
-
-	/*
-	When transporting a unit of commodity:
-	Pay for commodity at origin, taxes to governments.
-	The payment will be negated by sales from the stockpile, so actually only tariffs are paid
-	When arriving at target port, receive arbitrage pay and unload goods to their stockpiles.
-	Transport cost is paid separately via mechanics of ships maintenance
-	*/
+	auto export_tariff = ve::select(origin_is_0, additional_data.export_tariff[0], additional_data.export_tariff[1]);
+	auto import_tariff = ve::select(origin_is_0, additional_data.import_tariff[1], additional_data.import_tariff[0]);
 
 	return {
 		.origin = origin,
@@ -670,21 +985,29 @@ trade_and_tariff<TRADE_ROUTE> explain_trade_route_commodity_internal(
 		.price_target = price_target,
 
 		.transport_cost = transport_cost,
-
 		.transportaion_loss = additional_data.loss,
 		.distance = additional_data.distance,
 
-		// Origin earns mostly via normal supply demand matching
-		.origin_earn_per_unit = origin_merchant_cut,
-		// Target pays the normal price
-		.target_spend_per_unit = price_target,
-		// We receive payment of target
-		.owner_earn_per_unit = price_target,
-		// We have to actually pay the export price and taxes
-		.owner_spend_per_unit = price_origin + origin_tariff + target_tariff + origin_merchant_cut
+		.payment_per_unit = price_origin
+			* (1.f + export_tariff)
+			* (1.f - import_profit_priority + merchant_cut)
+			+ price_target
+			* import_tariff
+			+ transport_cost,
+
+		// the rest of payment is handled as satisfaction of generic demand
+		.payment_received_per_unit = price_origin * (merchant_cut - import_profit_priority)
 	};
 }
 
+//trade_and_tariff<dcon::trade_route_id> explain_trade_route_commodity(
+//	sys::state& state,
+//	dcon::trade_route_id trade_route,
+//	tariff_data<dcon::trade_route_id>& additional_data,
+//	dcon::commodity_id cid
+//) {
+//	return explain_trade_route_commodity_internal<dcon::trade_route_id>(state, trade_route, additional_data, cid);
+//}
 trade_and_tariff<ve::contiguous_tags<dcon::trade_route_id>> explain_trade_route_commodity(
 	sys::state const& state,
 	ve::contiguous_tags<dcon::trade_route_id> trade_route,
@@ -703,8 +1026,8 @@ trade_and_tariff<ve::partial_contiguous_tags<dcon::trade_route_id>> explain_trad
 }
 
 bool is_trade_route_relevant(sys::state& state, dcon::trade_route_id trade_route, dcon::nation_id n) {
-	auto origin = state.world.trade_route_get_origin(trade_route);
-	auto target = state.world.trade_route_get_target(trade_route);
+	auto origin = state.world.trade_route_get_connected_markets(trade_route, 0);
+	auto target = state.world.trade_route_get_connected_markets(trade_route, 1);
 	auto s_origin = state.world.market_get_zone_from_local_market(origin);
 	auto s_target = state.world.market_get_zone_from_local_market(target);
 	auto n_origin = state.world.state_instance_get_nation_from_state_ownership(s_origin);
@@ -726,12 +1049,34 @@ bool is_trade_route_relevant(sys::state& state, dcon::trade_route_id trade_route
 	return false;
 }
 
+float estimate_port_service_price(sys::state const& state, dcon::state_instance_id s) {
+	auto port_weight_target_total = 0.f;
+	auto price_port_target = 0.f;
+	province::for_each_province_in_state_instance(state, s, [&](dcon::province_id pid) {
+		auto price = state.world.province_get_service_price(pid, services::list::port_capacity);
+		auto size = 100.f + state.world.province_get_advanced_province_building_max_private_size(pid, advanced_province_buildings::list::civilian_ports);
+		auto local_weight = size / (price_properties::service::epsilon + price);
+		port_weight_target_total += local_weight;
+	});
+	province::for_each_province_in_state_instance(state, s, [&](dcon::province_id pid) {
+		auto price = state.world.province_get_service_price(pid, services::list::port_capacity);
+		auto size = 100.f + state.world.province_get_advanced_province_building_max_private_size(pid, advanced_province_buildings::list::civilian_ports);
+		auto local_weight = size/ (price_properties::service::epsilon + price);
+		price_port_target += local_weight / port_weight_target_total * price;
+	});
+	return price_port_target;
+}
+
 trade_and_tariff<dcon::trade_route_id> explain_trade_route_commodity(sys::state const& state, dcon::trade_route_id trade_route, dcon::commodity_id cid) {
 	auto current_volume = state.world.trade_route_get_volume(trade_route, cid);
-	auto origin = state.world.trade_route_get_origin(trade_route);
-	auto target = state.world.trade_route_get_target(trade_route);
-
-	auto owner = state.world.trade_route_get_owner(trade_route);
+	auto origin =
+		current_volume > 0.f
+		? state.world.trade_route_get_connected_markets(trade_route, 0)
+		: state.world.trade_route_get_connected_markets(trade_route, 1);
+	auto target =
+		current_volume <= 0.f
+		? state.world.trade_route_get_connected_markets(trade_route, 0)
+		: state.world.trade_route_get_connected_markets(trade_route, 1);
 
 	auto s_origin = state.world.market_get_zone_from_local_market(origin);
 	auto s_target = state.world.market_get_zone_from_local_market(target);
@@ -745,18 +1090,41 @@ trade_and_tariff<dcon::trade_route_id> explain_trade_route_commodity(sys::state 
 	controller_capital_origin = controller_capital_origin ? controller_capital_origin : n_origin;
 	controller_capital_target = controller_capital_target ? controller_capital_target : n_target;
 
-	auto origin_apply_tariff = state.world.trade_route_get_is_tariff_applied_origin(trade_route);
-	auto target_apply_tariff = state.world.trade_route_get_is_tariff_applied_target(trade_route);
+	auto origin_apply_tariff = current_volume > 0.f
+		? state.world.trade_route_get_is_tariff_applied_0(trade_route)
+		: state.world.trade_route_get_is_tariff_applied_1(trade_route);
+
+	auto target_apply_tariff = current_volume > 0.f
+		? state.world.trade_route_get_is_tariff_applied_1(trade_route)
+		: state.world.trade_route_get_is_tariff_applied_0(trade_route);
 
 	auto sat = state.world.market_get_actual_probability_to_buy(origin, cid);
-	auto absolute_volume = sat * current_volume;
-	auto distance = state.world.trade_route_get_distance_km(trade_route);
+	auto absolute_volume = sat * std::abs(current_volume);
+	auto distance = state.world.trade_route_get_distance(trade_route);
 
-	auto trade_good_loss_mult = std::max(0.f, 1.f - trade_goods_lost_per_km * distance);
+	auto trade_good_loss_mult = std::max(0.f, 1.f - trade_loss_per_distance_unit * distance);
 	auto import_amount = absolute_volume * trade_good_loss_mult;
 
+	auto effect_of_scale = std::max(trade_effect_of_scale_lower_bound, 1.f - absolute_volume * effect_of_transportation_scale);
+
 	auto is_sea_route = state.world.trade_route_get_is_sea_route(trade_route);
-	auto transport_cost = is_sea_route ? state.world.market_get_naval_transportation_price(owner) : state.world.market_get_land_transportation_price(owner);
+	auto is_land_route = state.world.trade_route_get_is_land_route(trade_route);
+
+	auto wage_origin = state.world.province_get_labor_price(capital_origin, labor::no_education);
+	auto wage_target = state.world.province_get_labor_price(capital_target, labor::no_education);
+
+	auto transport_cost_origin = is_land_route ? wage_origin : 0.f;
+	auto transport_cost_target = is_land_route ? wage_target : 0.f;
+
+	auto port_capacity = 0.f;
+
+	transport_cost_origin = is_sea_route ? estimate_port_service_price(state, s_origin) : transport_cost_origin;
+	transport_cost_target = is_sea_route ? estimate_port_service_price(state, s_target) : transport_cost_target;
+
+	auto transport_cost =
+		distance
+		/ trade_distance_covered_by_pair_of_workers_per_unit_of_good
+		* (transport_cost_origin + transport_cost_target) * effect_of_scale;
 
 	auto export_tariff = origin_apply_tariff ? effective_tariff_export_rate(state, controller_capital_origin, origin) : 0.f;
 	auto import_tariff = target_apply_tariff ? effective_tariff_import_rate(state, controller_capital_target, target) : 0.f;
@@ -764,51 +1132,65 @@ trade_and_tariff<dcon::trade_route_id> explain_trade_route_commodity(sys::state 
 	auto price_origin = price(state, origin, cid);
 	auto price_target = price(state, target, cid);
 
-	auto merchant_cut = controller_capital_origin == controller_capital_target ? economy::merchant_cut_domestic : economy::merchant_cut_foreign;
+	if(controller_capital_origin == controller_capital_target) {
+		return {
+			.origin = origin,
+			.target = target,
+			.origin_nation = controller_capital_origin,
+			.target_nation = controller_capital_target,
 
-	auto origin_tariff = price_origin * export_tariff;
-	auto origin_merchant_cut = price_origin * merchant_cut;
-	auto target_tariff = price_target * import_tariff;
+			.amount_origin = absolute_volume,
+			.amount_target = import_amount,
 
-	/*
-	When transporting a unit of commodity:
-	Pay for commodity at origin, taxes to governments.
-	The payment will be negated by sales from the stockpile, so actually only tariffs are paid
-	When arriving at target port, receive arbitrage pay and unload goods to their stockpiles.
-	Transport cost is paid separately via mechanics of ships maintenance
-	*/
+			.tariff_origin = 0.f,
+			.tariff_target = 0.f,
 
-	return {
-		.origin = origin,
-		.target = target,
-		.origin_nation = controller_capital_origin,
-		.target_nation = controller_capital_target,
+			.tariff_rate_origin = 0.f,
+			.tariff_rate_target = 0.f,
 
-		.amount_origin = absolute_volume,
-		.amount_target = import_amount,
-		.tariff_origin = absolute_volume * price_origin * export_tariff,
-		.tariff_target = import_amount * price_target * import_tariff,
+			.price_origin = price_origin,
+			.price_target = price_target,
 
-		.tariff_rate_origin = export_tariff,
-		.tariff_rate_target = import_tariff,
+			.transport_cost = transport_cost,
+			.transportaion_loss = trade_good_loss_mult,
+			.distance = distance,
 
-		.price_origin = price_origin,
-		.price_target = price_target,
+			.payment_per_unit = price_origin * (1.f - import_profit_priority + economy::merchant_cut_domestic) + transport_cost,
+			// the rest of payment is handled as satisfaction of generic demand
+			.payment_received_per_unit = price_origin * (economy::merchant_cut_domestic - import_profit_priority)
+		};
+	} else {
+		return {
+			.origin = origin,
+			.target = target,
+			.origin_nation = controller_capital_origin,
+			.target_nation = controller_capital_target,
 
-		.transport_cost = transport_cost,
+			.amount_origin = absolute_volume,
+			.amount_target = import_amount,
+			.tariff_origin = absolute_volume * price_origin * export_tariff,
+			.tariff_target = import_amount * price_target * import_tariff,
 
-		.transportaion_loss = trade_good_loss_mult,
-		.distance = distance,
+			.tariff_rate_origin = export_tariff,
+			.tariff_rate_target = import_tariff,
 
-		// Origin earns mostly via normal supply demand matching
-		.origin_earn_per_unit = origin_merchant_cut,
-		// Target pays the normal price
-		.target_spend_per_unit = price_target,
-		// We receive payment of target
-		.owner_earn_per_unit = price_target,
-		// We have to actually pay the export price and taxes
-		.owner_spend_per_unit = price_origin + origin_tariff + target_tariff + origin_merchant_cut
-	};
+			.price_origin = price_origin,
+			.price_target = price_target,
+
+			.transport_cost = transport_cost,
+			.transportaion_loss = trade_good_loss_mult,
+			.distance = distance,
+
+			.payment_per_unit = price_origin
+				* (1.f + export_tariff)
+				* (1.f - import_profit_priority + economy::merchant_cut_foreign)
+				+ price(state, target, cid)
+				* import_tariff
+				+ transport_cost,
+			// the rest of payment is handled as satisfaction of generic demand
+			.payment_received_per_unit = price_origin * (economy::merchant_cut_foreign - import_profit_priority)
+		};
+	}
 }
 
 // DO NOT USE OUTSIDE OF UI
@@ -863,42 +1245,70 @@ template <typename TRADE_ROUTE>
 auto explain_trade_route(
 	sys::state& state,
 	TRADE_ROUTE trade_route,
-	// Paid for each unit x price
+
+	ve::vectorizable_buffer<float, dcon::market_id>& available_port_capacity,
+	ve::vectorizable_buffer<float, dcon::market_id>& price_port_capacity,
 	ve::vectorizable_buffer<float, dcon::market_id>& export_tariff,
-	// Paid for each unit x price
 	ve::vectorizable_buffer<float, dcon::market_id>& import_tariff
 ) {
 	using VALUE = typename std::conditional_t<ve::is_vector_type_s<TRADE_ROUTE>::value, ve::fp_vector, float>;
 
-	auto origin = state.world.trade_route_get_origin(trade_route);
-	auto target = state.world.trade_route_get_target(trade_route);
-	auto owner = state.world.trade_route_get_owner(trade_route);
+	auto m0 = ve::apply([&](auto route) {
+		return state.world.trade_route_get_connected_markets(route, 0);
+	}, trade_route);
+	auto m1 = ve::apply([&](auto route) {
+		return state.world.trade_route_get_connected_markets(route, 1);
+	}, trade_route);
 
-	auto s_origin = state.world.market_get_zone_from_local_market(origin);
-	auto s_target = state.world.market_get_zone_from_local_market(target);
-	auto capital_origin = state.world.state_instance_get_capital(s_origin);
-	auto capital_target = state.world.state_instance_get_capital(s_target);	
-	auto tariff_applied_origin = state.world.trade_route_get_is_tariff_applied_origin(trade_route);
-	auto tariff_applied_target = state.world.trade_route_get_is_tariff_applied_target(trade_route);
-	auto distance = state.world.trade_route_get_distance_km(trade_route);
-	auto trade_good_loss_mult = adaptive_ve::max<VALUE>(0.f, 1.f - economy::trade_goods_lost_per_km * distance);
+	auto s0 = state.world.market_get_zone_from_local_market(m0);
+	auto s1 = state.world.market_get_zone_from_local_market(m1);
+
+	auto capital_0 = state.world.state_instance_get_capital(s0);
+	auto capital_1 = state.world.state_instance_get_capital(s1);
+	
+	auto tariff_applied_0 = state.world.trade_route_get_is_tariff_applied_0(trade_route);
+	auto tariff_applied_1 = state.world.trade_route_get_is_tariff_applied_1(trade_route);
+
+	auto distance = state.world.trade_route_get_distance(trade_route);
+	auto trade_good_loss_mult = adaptive_ve::max<VALUE>(0.f, 1.f - trade_loss_per_distance_unit * distance);
+	auto scale = trade_route_effect_of_scale(state, trade_route);
 
 	auto is_sea_route = state.world.trade_route_get_is_sea_route(trade_route);
+	auto is_land_route = state.world.trade_route_get_is_land_route(trade_route);
 
-	auto transport_cost_per_distance_weight = adaptive_ve::select(is_sea_route, state.world.market_get_naval_transportation_price(owner), state.world.market_get_land_transportation_price(owner));
+	auto wage_0 = state.world.province_get_labor_price(capital_0, labor::no_education);
+	auto wage_1 = state.world.province_get_labor_price(capital_1, labor::no_education);
 
-	auto export_tariff_origin = ve::select(tariff_applied_origin, export_tariff.get(origin), 0.f);
-	auto import_tariff_target = ve::select(tariff_applied_target, import_tariff.get(target), 0.f);
+	auto transport_cost_0 = ve::select(is_land_route, wage_0, 0.f);
+	auto transport_cost_1 = ve::select(is_land_route, wage_1, 0.f);
+
+	transport_cost_0 = ve::select(is_sea_route, price_port_capacity.get(m0), transport_cost_0);
+	transport_cost_1 = ve::select(is_sea_route, price_port_capacity.get(m1), transport_cost_1);
+
+	auto base_cost_per_unit = distance / trade_distance_covered_by_pair_of_workers_per_unit_of_good * (
+		transport_cost_0
+		+ transport_cost_1
+	);
+
+	auto export_tariff_0 = ve::select(tariff_applied_0, export_tariff.get(m0), 0.f);
+	auto import_tariff_0 = ve::select(tariff_applied_0, import_tariff.get(m0), 0.f);
+	auto export_tariff_1 = ve::select(tariff_applied_1, export_tariff.get(m1), 0.f);
+	auto import_tariff_1 = ve::select(tariff_applied_1, import_tariff.get(m1), 0.f);
 
 	tariff_data<TRADE_ROUTE> result{
-		.applies_export_tariff = tariff_applied_origin,
-		.applies_import_tariff = tariff_applied_target,
-		.export_tariff = export_tariff_origin,
-		.import_tariff = import_tariff_target,
-
+		.applies_tariff = {tariff_applied_0, tariff_applied_1},
+		.export_tariff = {export_tariff_0, export_tariff_1 },
+		.import_tariff = {import_tariff_0, import_tariff_1 },
+		.markets = { m0, m1 },
 		.distance = distance,
 		.loss = trade_good_loss_mult,
-		.transportation_cost = transport_cost_per_distance_weight * distance
+		.base_distance_cost = base_cost_per_unit,
+		.workers_satisfaction = adaptive_ve::min(
+			state.world.province_get_labor_demand_satisfaction(capital_0, labor::no_education),
+			state.world.province_get_labor_demand_satisfaction(capital_1, labor::no_education)
+		),
+		.effect_of_scale = scale,
+		.distance_cost_scaled = scale * base_cost_per_unit
 	};
 
 	return result;
@@ -906,59 +1316,59 @@ auto explain_trade_route(
 
 void fill_trade_buffers(
 	sys::state& state,
-	const ve::vectorizable_buffer<float, dcon::market_id>& export_tariff_buffer,
-	const ve::vectorizable_buffer<float, dcon::market_id>& import_tariff_buffer,
-	bool presimulation
+
+	ve::vectorizable_buffer<float, dcon::market_id>& available_port_capacity,
+	ve::vectorizable_buffer<float, dcon::market_id>& price_port_capacity,
+
+	ve::vectorizable_buffer<float, dcon::market_id>& export_tariff_buffer,
+	ve::vectorizable_buffer<float, dcon::market_id>& import_tariff_buffer,
+
+	ve::vectorizable_buffer<float, dcon::trade_route_id>& buffer_payment_0,
+	ve::vectorizable_buffer<float, dcon::trade_route_id>& buffer_payment_1,
+
+	ve::vectorizable_buffer<float, dcon::trade_route_id>& buffer_tariff_0,
+	ve::vectorizable_buffer<float, dcon::trade_route_id>& buffer_tariff_1,
+
+	std::vector<ve::vectorizable_buffer<float, dcon::trade_route_id>>& per_commodity_export_0,
+	std::vector<ve::vectorizable_buffer<float, dcon::trade_route_id>>& per_commodity_export_1,
+	std::vector<ve::vectorizable_buffer<float, dcon::trade_route_id>>& per_commodity_import_0,
+	std::vector<ve::vectorizable_buffer<float, dcon::trade_route_id>>& per_commodity_import_1
 ) {
 	uint32_t total_commodities = state.world.commodity_size();
-	concurrency::parallel_for(uint32_t(1), total_commodities, [&](uint32_t k) {
-		dcon::commodity_id cid{ dcon::commodity_id::value_base_t(k) };
-		state.world.for_each_trade_route([&](auto route) {
-			auto origin = state.world.trade_route_get_origin(route);
-			auto target = state.world.trade_route_get_target(route);
-			auto distance = state.world.trade_route_get_distance_km(route);
-			auto volume = state.world.trade_route_get_volume(route, cid);
-			auto lost_modifier = std::max(0.f, 1.f - distance * trade_goods_lost_per_km);
-			auto sat = state.world.market_get_actual_probability_to_buy(origin, cid);
-			state.world.market_set_export(origin, cid, state.world.market_get_export(origin, cid) + sat * volume);
-			state.world.market_set_import(target, cid, state.world.market_get_export(target, cid) + sat * volume * lost_modifier);
-			state.world.market_set_stockpile(target, cid, state.world.market_get_stockpile(target, cid) + sat * volume * lost_modifier);
-			if(presimulation && state.world.commodity_get_actually_exists_in_nature(cid)) {
-				state.world.market_set_stockpile(target, cid, state.world.market_get_stockpile(target, cid) + volume * 10.f);
-			}
-		});
-	});
-	state.world.for_each_trade_route([&](auto route) {
-		auto origin = state.world.trade_route_get_origin(route);
-		auto target = state.world.trade_route_get_target(route);
-		auto owner = state.world.trade_route_get_owner(route);
-		auto cut = state.world.trade_route_get_origin_cut_rate(route);
-		auto total_earn_export = 0.f;
-		auto total_spend_import = 0.f;
-		auto total_origin_tariff = 0.f;
-		auto total_target_tariff = 0.f;
-		auto export_rate = state.world.trade_route_get_is_tariff_applied_origin(route) ? export_tariff_buffer.get(origin) : 0.f;
-		auto import_rate = state.world.trade_route_get_is_tariff_applied_origin(route) ? import_tariff_buffer.get(origin) : 0.f;
-		auto total_arbitrage = 0.f;
-		state.world.for_each_commodity([&](auto cid) {
-			auto sat = state.world.market_get_actual_probability_to_buy(origin, cid);
-			auto budget_scale = state.world.market_get_trade_house_budget_import_scale(target);
-			auto volume = state.world.trade_route_get_volume(route, cid) * sat * budget_scale;
 
-			auto price_origin = state.world.market_get_price(origin, cid);
-			auto price_target = state.world.market_get_price(target, cid);
+	state.world.execute_parallel_over_trade_route([&](auto routes) {
+		auto data = explain_trade_route(state, routes, available_port_capacity, price_port_capacity, export_tariff_buffer, import_tariff_buffer);
+		auto m0 = data.markets[0];
+		auto m1 = data.markets[1];
 
-			total_earn_export = total_earn_export + volume * (price_origin * cut);
-			total_spend_import = total_spend_import + volume * (price_target);
-			total_origin_tariff = total_origin_tariff + volume * (price_origin * export_rate);
-			total_target_tariff = total_target_tariff + volume * (price_target * import_rate);
-			total_arbitrage = total_arbitrage + volume * (price_target * (1.f - import_rate) - price_origin * (1.f + export_rate + cut));
-		});
-		state.world.market_set_arbitrage(owner, state.world.market_get_arbitrage(owner) + total_arbitrage);
-		state.world.market_set_export_cut(origin, state.world.market_get_export_cut(origin) + total_earn_export);
-		state.world.market_set_import_spending(target, state.world.market_get_import_spending(target) + total_spend_import);
-		state.world.market_set_tariff_collected(origin, state.world.market_get_tariff_collected(origin) + total_origin_tariff);
-		state.world.market_set_tariff_collected(target, state.world.market_get_tariff_collected(target) + total_target_tariff);
+		for(uint32_t k = 0; k < total_commodities; k++) {
+			dcon::commodity_id cid{ dcon::commodity_id::value_base_t(k) };
+			if(state.world.commodity_get_money_rgo(cid)) continue;
+
+			auto route_data = explain_trade_route_commodity(state, routes, data, cid);
+
+			auto origin = route_data.origin;
+			auto target = route_data.target;
+
+			auto origin_recieve = route_data.amount_origin * route_data.payment_received_per_unit;
+			auto target_pay = route_data.amount_origin * route_data.payment_per_unit;
+
+			auto mask_origin_is_0 = origin == m0;
+			auto mask_origin_is_1 = !mask_origin_is_0;
+			auto origin_is_0 = ve::select(mask_origin_is_0, ve::fp_vector{ 1.f }, ve::fp_vector{ 0.f });
+			auto origin_is_1 = 1.f - origin_is_0;
+
+			buffer_payment_0.set(routes, buffer_payment_0.get(routes) + ve::select(mask_origin_is_0, origin_recieve, -target_pay));
+			buffer_payment_1.set(routes, buffer_payment_1.get(routes) + ve::select(mask_origin_is_1, origin_recieve, -target_pay));
+
+			buffer_tariff_0.set(routes, buffer_tariff_0.get(routes) + ve::select(mask_origin_is_0, route_data.tariff_origin, route_data.tariff_target));
+			buffer_tariff_1.set(routes, buffer_tariff_1.get(routes) + ve::select(mask_origin_is_1, route_data.tariff_origin, route_data.tariff_target));
+
+			per_commodity_export_0[k].set(routes, per_commodity_export_0[k].get(routes) + origin_is_0 * route_data.amount_origin);
+			per_commodity_export_1[k].set(routes, per_commodity_export_1[k].get(routes) + origin_is_1 * route_data.amount_origin);
+			per_commodity_import_0[k].set(routes, per_commodity_import_0[k].get(routes) + origin_is_1 * route_data.amount_target);
+			per_commodity_import_1[k].set(routes, per_commodity_import_1[k].get(routes) + origin_is_0 * route_data.amount_target);
+		}
 	});
 }
 

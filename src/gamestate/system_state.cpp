@@ -1975,20 +1975,16 @@ void state::load_scenario_data(parsers::error_handler& err, sys::year_month_day 
 		int status;
 		status = luaL_dostring(lua_game_loop_environment, lua_combined_script.c_str());
 		if(status) {
-			auto error_string = lua_tostring(lua_game_loop_environment, -1);
-			window::emit_error_message(error_string, true);
 #ifdef _WIN32
-			OutputDebugStringA(error_string);
+			OutputDebugStringA(lua_tostring(lua_game_loop_environment, -1));
 #endif
 			lua_settop(lua_game_loop_environment, 0);
 			std::abort();
 		}
 		status = luaL_dostring(lua_game_loop_environment, lua_game_loop_script.c_str());
 		if(status) {
-			auto error_string = lua_tostring(lua_game_loop_environment, -1);
-			window::emit_error_message(error_string, true);
 #ifdef _WIN32
-			OutputDebugStringA(error_string);
+			OutputDebugStringA(lua_tostring(lua_game_loop_environment, -1));
 #endif
 			lua_settop(lua_game_loop_environment, 0);
 			std::abort();
@@ -1999,17 +1995,8 @@ void state::load_scenario_data(parsers::error_handler& err, sys::year_month_day 
 		err.accumulated_warnings += "update_administrative_efficiency function was overidden from LUA\n";
 	}
 
-	// Start with loading Lua scenario data.
 
-	lua_getfield(lua_game_loop_environment, LUA_GLOBALSINDEX, "LOAD_SCENARIO_DATA");
-	auto result = lua_pcall(lua_game_loop_environment, 0, 0, 0);
-	if(result) {
-		auto error_string = lua_tostring(lua_game_loop_environment, -1);
-		window::emit_error_message(error_string, true);
-		console_log(lua_tostring(lua_game_loop_environment, -1));
-		lua_settop(lua_game_loop_environment, 0);
-	}
-	assert(lua_gettop(lua_game_loop_environment) == 0);
+
 
 	//text::name_into_font_id(*this, "garamond_14");
 	ui::load_text_gui_definitions(*this, context.gfx_context, err);
@@ -2140,10 +2127,7 @@ void state::load_scenario_data(parsers::error_handler& err, sys::year_month_day 
 		}
 	}
 	// read commodities from goods.txt
-
-	if(world.commodity_size() == 0) {
-		// if lua haven't created any commodity
-
+	{
 		// FIRST: make sure that we have a money good
 		if(world.commodity_size() == 0) {
 			// create money
@@ -2164,31 +2148,10 @@ void state::load_scenario_data(parsers::error_handler& err, sys::year_month_day 
 			err.fatal = true;
 			err.accumulated_errors += "File common/goods.txt nor common/tradegoods.txt could be opened\n";
 		}
-	} else {
-		// register lua commodity names
-		world.for_each_commodity( [&](auto cid){
-			auto name_id = world.commodity_get_name(cid);
-			auto name = to_string_view(name_id);
-			auto name_str = std::string(name);
-			context.map_of_commodity_names.insert_or_assign(name_str, cid);
-		});
 	}
 
 	// read buildings.text
 	// world.factory_type_resize_construction_costs(world.commodity_size());
-	if(world.factory_type_size() == 0) {
-		context.lua_factories = false;
-	} else {
-		// register factory names
-		world.for_each_factory_type([&](auto cid) {
-			auto name_id = world.factory_type_get_name(cid);
-			auto name = to_string_view(name_id);
-			auto name_str = std::string (name);
-			context.map_of_factory_names.insert_or_assign(name_str, cid);
-		});
-		context.lua_factories = true;
-	}
-
 	{
 		auto buildings = open_file(common, NATIVE("buildings.txt"));
 		if(buildings) {
@@ -3245,6 +3208,7 @@ void state::load_scenario_data(parsers::error_handler& err, sys::year_month_day 
 	world.state_instance_resize_production_directive(production_directives::size(*this));
 
 	world.trade_route_resize_volume(world.commodity_size());
+	world.trade_route_resize_stabilization_volume(world.commodity_size());
 
 	world.nation_resize_factory_type_experience(world.factory_type_size());
 	world.nation_resize_factory_type_experience_priority_national(world.factory_type_size());
@@ -3253,11 +3217,9 @@ void state::load_scenario_data(parsers::error_handler& err, sys::year_month_day 
 	world.factory_resize_efficiency_level(economy::commodity_set::set_size);
 
 	world.market_resize_price(world.commodity_size());
-	world.market_resize_price_confidence(world.commodity_size());
 	world.market_resize_supply(world.commodity_size());
 	world.market_resize_demand(world.commodity_size());
 	world.market_resize_stockpile(world.commodity_size());
-	world.market_resize_stockpile_sales(world.commodity_size());
 	world.market_resize_consumption(world.commodity_size());
 	world.market_resize_intermediate_demand(world.commodity_size());
 
@@ -3273,7 +3235,6 @@ void state::load_scenario_data(parsers::error_handler& err, sys::year_month_day 
 	world.market_resize_satisfied_ratio_of_demanded_life_needs(world.pop_type_size());
 	world.market_resize_satisfied_ratio_of_demanded_everyday_needs(world.pop_type_size());
 	world.market_resize_satisfied_ratio_of_demanded_luxury_needs(world.pop_type_size());
-	world.market_resize_owned_ships(uint32_t(military_definitions.unit_base_definitions.size()));
 
 	world.market_resize_import(world.commodity_size());
 	world.market_resize_export(world.commodity_size());
@@ -3290,11 +3251,6 @@ void state::load_scenario_data(parsers::error_handler& err, sys::year_month_day 
 	world.market_resize_life_needs_weights(world.commodity_size());
 	world.market_resize_everyday_needs_weights(world.commodity_size());
 	world.market_resize_luxury_needs_weights(world.commodity_size());
-
-	world.market_resize_local_consumption_weights(world.commodity_size() * world.consumption_category_size());
-	world.market_resize_demand_per_consumption_category(world.consumption_category_size());
-	world.market_resize_cost_per_consumption_category(world.consumption_category_size());
-	world.market_resize_satisfied_demand_ratio_per_consumption_category(world.consumption_category_size());
 
 	world.province_resize_labor_price(economy::labor::total);
 	world.province_resize_labor_supply(economy::labor::total);

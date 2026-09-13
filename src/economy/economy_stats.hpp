@@ -411,17 +411,16 @@ float estimate_probability_to_buy_after_supply_increase(sys::state const& state,
 float estimate_next_budget(sys::state const& state, dcon::nation_id n);
 
 struct market_budget {
-	float sold = 0.f;
-	float bought = 0.f;
-	float imports = 0.f;
-	float exports = 0.f;
-	float dividents = 0.f;
-	float investments = 0.f;
-	float wages_cut = 0.f;
-	float services = 0.f;
-	float arbitrage = 0.f;
+	float sold;
+	float bought;
+	float imports;
+	float exports;
+	float dividents;
+	float investments;
+	float wages_cut;
+	float services;
 
-	float estimated_change = 0.f;
+	float estimated_change;
 };
 
 market_budget breakdown_market_budget(sys::state const& state, dcon::market_id m);
@@ -451,7 +450,6 @@ struct nation_monetary_breakdown {
 	float pops_spending_life = 0.f;
 	float pops_spending_everyday = 0.f;
 	float pops_spending_luxury = 0.f;
-	float pops_spending_categories = 0.f;
 	float pops_spending_housing = 0.f;
 	float pops_spending_education = 0.f;
 
