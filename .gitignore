@@ -395,3 +395,4 @@ FodyWeavers.xsd
 
 # Standalone g++ -fsyntax-only harness (see .syntax-check/check.sh)
 .syntax-check/
+.zcode/

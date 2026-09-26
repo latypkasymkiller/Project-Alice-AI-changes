@@ -97,6 +97,7 @@
 #include "ai_influence.cpp"
 #include "ai_economy.cpp"
 #include "ai_pressure.cpp"
+#include "ai_supply.cpp"
 #include "ai_war.cpp"
 #include "map_modes.cpp"
 #include "platform_specific.cpp"

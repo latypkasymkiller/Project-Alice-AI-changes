@@ -687,9 +687,18 @@
 	LUA_DEFINES_LIST_ELEMENT(alice_ai_hold_ratio, 0.750000)                                                                        \
 /* How far reinforcements may push a battle province past its supply limit. 1.0 forbids overstacking outright; raise it */         \
 /* to let the AI accept attrition to win a battle it would otherwise be unable to feed reinforcements into. */                     \
-	LUA_DEFINES_LIST_ELEMENT(alice_ai_battle_supply_tolerance, 1.000000)                                                           \
+		LUA_DEFINES_LIST_ELEMENT(alice_ai_battle_supply_tolerance, 1.000000)                                                           \
+/* Armies below this supply score (0..1: best active route throughput x survival, or yesterday's regiment satisfaction) */         \
+/* are held out of offensives and battle gathering. 0 disables the filter. */                                                       \
+		LUA_DEFINES_LIST_ELEMENT(alice_ai_army_supply_floor, 0.200000)                                                                \
+/* A land march into one of our or an ally's provinces whose supply quality is below this is cancelled; hostile ground is */       \
+/* exempt, because its cache reads zero even when the advance is sound. 0 disables the check. */                                    \
+		LUA_DEFINES_LIST_ELEMENT(alice_ai_march_supply_floor, 0.050000)                                                               \
+/* Relative distance penalty for gathering an assault in a province our supply does not reach: 1.0 doubles the effective */       \
+/* distance of a zero-quality candidate, so plain distance still dominates. */                                                      \
+		LUA_DEFINES_LIST_ELEMENT(alice_ai_assembly_supply_weight, 1.000000)                                                           \
 /* Safety margin over estimated enemy strength when deciding how much to commit to one battle */                                   \
-	LUA_DEFINES_LIST_ELEMENT(alice_ai_reinforce_sufficiency, 1.500000)                                                             \
+		LUA_DEFINES_LIST_ELEMENT(alice_ai_reinforce_sufficiency, 1.500000)                                                             \
 /* Days between defensive redistributions while at war (peacetime keeps the twice-a-month cadence) */                              \
 	LUA_DEFINES_LIST_ELEMENT(alice_ai_wartime_defense_interval, 4.000000)                                                          \
 /* Hostile pressure, in thousands of men, at or below which a threat is a token and cannot pin a garrison */        \

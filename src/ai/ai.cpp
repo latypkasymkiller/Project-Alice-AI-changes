@@ -1,5 +1,6 @@
 #include "ai.hpp"
 #include "ai_pressure.hpp"
+#include "ai_supply.hpp"
 #include "ai_types.hpp"
 #include "ai_campaign_values.hpp"
 #include "system_state.hpp"
@@ -713,6 +714,21 @@ void validate_ai_orders(sys::state& state) {
 
 				auto battles = state.world.province_get_land_battle_location(next);
 				if(battles.begin() == battles.end()) {
+					/*
+					No delivery reaches the next province while it is ours or an ally's: the
+					march would end in a pocket where org never recovers. Hostile ground is
+					exempt -- its cache reads zero even when the advance is sound. Mirrors the
+					pressure veto below: stop the march and release the station, so
+					distribute_guards re-decides instead of re-issuing the same order.
+					*/
+					float const march_floor = ai::march_supply_floor(state);
+					if(march_floor > 0.0f
+						&& ai::province_supply_quality(state, controller, next) < march_floor
+						&& ai::is_friendly_supply_zone(state, controller, next)) {
+						military::stop_army_movement(state, ar);
+						ar.set_ai_province(dcon::province_id{});
+					}
+
 					float hostile_there = 0.0f;
 					float friendly_there = ai::army_pressure_weight(state, ar.id);
 
@@ -1933,6 +1949,11 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 		if(w <= 0.0f)
 			continue;
 
+		// An army no route reaches recovers no org; marching it to the battle
+		// only enlarges the pile that starts bleeding when the fight ends.
+		if(ai::army_supply_score(state, ar.get_army().id) < ai::army_supply_floor(state))
+			continue;
+
 		candidates.push_back(candidate{ ar.get_army().id, location.id, sdist, w });
 	}
 
@@ -1973,6 +1994,16 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 	float const hold_ratio = std::max(0.0f, state.defines.alice_ai_hold_ratio);
 	float const token_pressure = std::max(0.0f, state.defines.alice_ai_token_pressure);
 	int32_t const max_commits = int32_t(std::clamp(state.defines.alice_ai_gather_max_commits, 1.0f, 64.0f));
+
+	/*
+	Post-battle attrition bites the whole stack left standing in the battle
+	province: relative_attrition_amount exempts armies while they fight, then
+	charges (weight - supply_limit) against everyone once the fight resolves.
+	The tolerance says how far past the limit reinforcement may push the pile;
+	raising it lets the AI accept attrition to force a battle. Zero disables.
+	*/
+	float const supply_tolerance = std::max(0.0f, state.defines.alice_ai_battle_supply_tolerance);
+	int32_t const battle_supply_limit = supply_tolerance > 0.0f ? military::supply_limit_in_province(state, n, p) : 0;
 
 	float committed = 0.0f;
 	int32_t commits = 0;
@@ -2019,6 +2050,18 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 		auto path = province::make_land_unit_path(state, c.loc, p, n, c.a);
 		if(path.empty())
 			continue;
+
+		/*
+		Same units as relative_attrition_amount: army weight against the
+		province's supply limit. `committed` counts what this pass has already
+		started marching; it has not arrived, but the sector has already given it
+		up, and next pass it will be standing in the pile.
+		*/
+		if(supply_tolerance > 0.0f) {
+			float const stack_weight = military::local_army_weight(state, p) + committed + send_w;
+			if(stack_weight > float(battle_supply_limit) * supply_tolerance)
+				continue; // the fight can be joined; the pile afterwards cannot be fed
+		}
 
 		// Путь есть: отделяем требуемый вес
 		dcon::army_id army_to_send = split_army_for_weight(state, n, c.a, send_w);
@@ -2379,6 +2422,9 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 	};
 	std::vector<a_str> ready_armies;
 	bool const use_pressure = ai::pressure_enabled(state);
+	// Armies no route reaches recover no org and cannot be supplied where they
+	// stand; they are held out of every offensive below.
+	float const army_supply_floor_v = ai::army_supply_floor(state);
 	ai::pressure_field* attack_field = nullptr;
 	if(use_pressure) {
 		attack_field = &ai::cached_tactical_field(state, n);
@@ -2393,7 +2439,8 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 			|| ar.get_army().get_black_flag()
 			|| ar.get_army().get_arrival_time()
 			|| activity != army_activity::on_guard
-			|| !army_ready_for_battle(state, n, ar.get_army())) {
+			|| !army_ready_for_battle(state, n, ar.get_army())
+			|| ai::army_supply_score(state, ar.get_army().id) < army_supply_floor_v) {
 
 			continue;
 		}
@@ -2555,7 +2602,8 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 						|| ar.get_army().get_black_flag()
 						|| ar.get_army().get_arrival_time()
 						|| army_activity(ar.get_army().get_ai_activity()) != army_activity::on_guard
-						|| !army_ready_for_battle(state, n, ar.get_army())) {
+						|| !army_ready_for_battle(state, n, ar.get_army())
+						|| ai::army_supply_score(state, ar.get_army().id) < army_supply_floor_v) {
 
 						continue;
 					}
@@ -2646,6 +2694,13 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 					march_cost += province::sorting_distance(state, ready_armies[m2].p, other.id);
 				}
 
+				// Supply-aware assembly preference: between otherwise similar
+				// neighbours, gather where our routes actually reach. The penalty is
+				// relative -- weight 1.0 doubles the effective distance of a
+				// zero-quality candidate, so plain distance still dominates.
+				float const quality = ai::province_supply_quality(state, n, other.id);
+				march_cost *= 1.0f + ai::assembly_supply_weight(state) * (1.0f - quality);
+
 				if(!central_province || march_cost < minimal_distance) {
 					minimal_distance = march_cost;
 					central_province = other.id;
@@ -2694,7 +2749,8 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 					|| ar_army.get_black_flag()
 					|| ar_army.get_arrival_time()
 					|| army_activity(ar_army.get_ai_activity()) != army_activity::on_guard
-					|| !army_ready_for_battle(state, n, ar_army)) {
+					|| !army_ready_for_battle(state, n, ar_army)
+					|| ai::army_supply_score(state, ar_army.id) < army_supply_floor_v) {
 
 					continue;
 				}
@@ -2891,8 +2947,17 @@ void move_gathered_attackers(sys::state& state) {
 							}
 						}
 
+						// Land march is permitted ONLY to adjacent sectors or via safe territory,
+						// and only into ground our routes can reach while it is ours or an ally's:
+						// a zero-quality friendly destination is an org-dead pocket. Hostile ground
+						// is exempt -- its cache reads zero even when the advance is sound.
+						float const march_floor = ai::march_supply_floor(state);
+						bool const dead_supply = march_floor > 0.0f
+							&& ai::province_supply_quality(state, ar.get_controller_from_army_control(), target_prov) < march_floor
+							&& ai::is_friendly_supply_zone(state, ar.get_controller_from_army_control(), target_prov);
+
 						// Land march is permitted ONLY to adjacent sectors or via safe territory
-						if(is_adjacent || is_safe_path) {
+						if((is_adjacent || is_safe_path) && !dead_supply) {
 							if(auto path = province::make_land_unit_path(state, army_loc.id, target_prov, ar.get_controller_from_army_control(), ar); path.size() > 0) {
 								for(auto o : army_loc.get_army_location()) {
 									if(o.get_army().get_ai_province() == target_prov
