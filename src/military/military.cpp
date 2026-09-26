@@ -1092,6 +1092,19 @@ bool are_allied_in_war(sys::state const& state, dcon::nation_id a, dcon::nation_
 	return false;
 }
 
+bool province_has_enemy_army(sys::state& state, dcon::province_id location, dcon::nation_id our_nation) {
+	auto armies = state.world.province_get_army_location(location);
+	if(armies.begin() == armies.end()) {
+		return false; // no armies present
+	}
+	for(auto army : armies) {
+		if(are_enemies(state, our_nation, army.get_army().get_controller_from_army_control())) {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool are_in_common_war(sys::state const& state, dcon::nation_id a, dcon::nation_id b) {
 	for(auto wa : state.world.nation_get_war_participant(a)) {
 		for(auto o : wa.get_war().get_war_participant()) {
