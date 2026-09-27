@@ -2515,6 +2515,7 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 	struct a_str {
 		dcon::province_id p;
 		float str = 0.0f;
+		float weight = 0.0f; // real army weight (thousands of men) staged at this province
 	};
 	std::vector<a_str> ready_armies;
 	bool const use_pressure = ai::pressure_enabled(state);
@@ -2549,7 +2550,7 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		++ready_count;
 		auto loc = ar.get_army().get_location_from_army_location().id;
 		if(std::find_if(ready_armies.begin(), ready_armies.end(), [loc](a_str const& v) { return loc == v.p; }) == ready_armies.end()) {
-			ready_armies.push_back(a_str{ loc, 0.0f });
+			ready_armies.push_back(a_str{ loc, 0.0f, 0.0f });
 		}
 	}
 
@@ -2689,6 +2690,40 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 	int32_t max_attacks_to_make = is_at_war ? std::max(min_ready_count, (ready_count + 1) / 3) : ready_count; // not at war -- allow all stacks to attack rebels
 	auto const psize = potential_targets.size();
 
+	/*
+	Strategic reserve: when two or more at-war enemies sit on our borders, a
+	single assault may not commit more than (1 - reserve) of the total army
+	weight. The remainder stays on_guard and distribute_guards spreads it over
+	the other threatened fronts. Without this the whole army ends up locked in
+	one siege while the coalition walks into the undefended country (Kielce
+	1836: the entire 88k army besieging for 115+ days while France and Prussia
+	opened new fronts toward Vienna). Single-front wars attack with everything.
+	*/
+	float total_army_weight = 0.0f;
+	uint32_t adjacent_enemy_fronts = 0;
+	{
+		std::vector<dcon::nation_id> adjacent_enemies;
+		for(auto c : state.world.nation_get_province_control(n)) {
+			for(auto padj : c.get_province().get_province_adjacency()) {
+				auto other = padj.get_connected_provinces(0) == c.get_province() ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
+				auto n_controller = other.get_nation_from_province_control();
+				if(n_controller && military::are_at_war(state, n, n_controller)
+					&& std::find(adjacent_enemies.begin(), adjacent_enemies.end(), n_controller) == adjacent_enemies.end()) {
+					adjacent_enemies.push_back(n_controller);
+				}
+			}
+		}
+		adjacent_enemy_fronts = uint32_t(adjacent_enemies.size());
+		for(auto a : state.world.nation_get_army_control(n)) {
+			total_army_weight += ai::army_pressure_weight(state, a.get_army().id);
+		}
+	}
+	// 40% of the army stays available for the other fronts and the capital.
+	constexpr float strategic_reserve_fraction = 0.4f;
+	float const attack_weight_cap = adjacent_enemy_fronts >= 2
+		? total_army_weight * (1.0f - strategic_reserve_fraction)
+		: 1.0e9f;
+
 	for(uint32_t i = 0; i < psize && max_attacks_to_make > 0; ++i) {
 		if(!potential_targets[i].location)
 			continue; // target has been removed as too close by some earlier iteration
@@ -2714,10 +2749,13 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 
 		// make list of attackers
 		float a_force_str = 0.f;
+		float committed_assault_weight = 0.0f;
+		bool reserve_limit_hit = false;
 		int32_t k = int32_t(ready_armies.size());
 		for(; k-- > 0 && a_force_str <= target_attack_force;) {
 			if(ready_armies[k].str == 0.0f) {
 				float extracted_weight = 0.0f;
+				float extracted_real_weight = 0.0f;
 				for(auto ar : state.world.province_get_army_location(ready_armies[k].p)) {
 					if(ar.get_army().get_battle_from_army_battle_participation()
 						|| n != ar.get_army().get_controller_from_army_control()
@@ -2778,17 +2816,25 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 						continue; // Hold frontline sector instead of marching away on other attacks
 
 					extracted_weight += army_w;
+					extracted_real_weight += ai::army_pressure_weight(state, ar.get_army().id);
 					ready_armies[k].str += estimate_army_offensive_strength(state, ar.get_army());
 				}
+				ready_armies[k].weight = extracted_real_weight;
 				ready_armies[k].str += 0.00001f;
 			}
 			a_force_str += ready_armies[k].str;
+			committed_assault_weight += ready_armies[k].weight;
+			if(committed_assault_weight >= attack_weight_cap) {
+				reserve_limit_hit = true;
+				break; // Strategic reserve: the rest of the pool stays for the other fronts
+			}
 		}
 
 		if(a_force_str < target_attack_force) {
 			AI_LOG_N(state, 3, "attack", n,
 				"skip target too strong: " + ai_log_prov_label(state, potential_targets[i].location)
-				+ " have=" + std::to_string(a_force_str) + " need=" + std::to_string(target_attack_force));
+				+ " have=" + std::to_string(a_force_str) + " need=" + std::to_string(target_attack_force)
+				+ " reserve_hit=" + std::to_string(reserve_limit_hit ? 1 : 0));
 			continue; // Target is too strong for remaining available forces, skip and check others
 		}
 
