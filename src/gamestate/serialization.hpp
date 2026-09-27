@@ -197,7 +197,12 @@ inline uint8_t const* deserialize(uint8_t const* ptr_in, ankerl::unordered_dense
 // element count, and so the struct size, is unchanged -- which is exactly why this bump is
 // needed. Without it an older .bin would load and be accepted, and the 10.0 sitting at that
 // offset would be read as a supply tolerance, silently lifting the cap it is meant to impose.
-constexpr inline uint32_t save_file_version = 47;
+// 48: parsing::defines gained alice_ai_guard_sufficiency and alice_ai_army_supply_floor
+// (alice_ai_march_supply_floor was removed) -- the struct is memcpy'd whole, so its layout
+// changed. The upstream consumption-category merge also added save-tagged schema properties
+// (local_consumption_weights, demand/cost/satisfied_demand per consumption_category). Both
+// changes make pre-48 .bin files read at the wrong offsets rather than being rejected.
+constexpr inline uint32_t save_file_version = 48;
 constexpr inline uint32_t scenario_file_version = 139 + save_file_version;
 
 struct scenario_header {

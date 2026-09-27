@@ -739,6 +739,7 @@ void poptype_file::equivalent(association_type, std::string_view value, error_ha
 }
 
 void poptype_file::life_needs(commodity_array const& value, error_handler& err, int32_t line, poptype_context& context) {
+	//if (context.outer_context.state.world.consumption_category_size() > 0) return;
 	context.outer_context.state.world.for_each_commodity([&](dcon::commodity_id cid) {
 		if(cid.index() < value.data.ssize())
 			context.outer_context.state.world.pop_type_set_life_needs(context.id, cid, value.data[cid]);
@@ -746,6 +747,7 @@ void poptype_file::life_needs(commodity_array const& value, error_handler& err, 
 }
 
 void poptype_file::everyday_needs(commodity_array const& value, error_handler& err, int32_t line, poptype_context& context) {
+	//if(context.outer_context.state.world.consumption_category_size() > 0) return;
 	context.outer_context.state.world.for_each_commodity([&](dcon::commodity_id cid) {
 		if(cid.index() < value.data.ssize())
 			context.outer_context.state.world.pop_type_set_everyday_needs(context.id, cid, value.data[cid]);
@@ -753,6 +755,7 @@ void poptype_file::everyday_needs(commodity_array const& value, error_handler& e
 }
 
 void poptype_file::luxury_needs(commodity_array const& value, error_handler& err, int32_t line, poptype_context& context) {
+	//if(context.outer_context.state.world.consumption_category_size() > 0) return;
 	context.outer_context.state.world.for_each_commodity([&](dcon::commodity_id cid) {
 		if(cid.index() < value.data.ssize())
 			context.outer_context.state.world.pop_type_set_luxury_needs(context.id, cid, value.data[cid]);
