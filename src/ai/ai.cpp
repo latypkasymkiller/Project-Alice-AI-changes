@@ -2691,32 +2691,84 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 	auto const psize = potential_targets.size();
 
 	/*
-	Strategic reserve: when two or more at-war enemies sit on our borders, a
+	Strategic reserve: when the war touches us on two or more SEPARATE fronts, a
 	single assault may not commit more than (1 - reserve) of the total army
 	weight. The remainder stays on_guard and distribute_guards spreads it over
 	the other threatened fronts. Without this the whole army ends up locked in
 	one siege while the coalition walks into the undefended country (Kielce
 	1836: the entire 88k army besieging for 115+ days while France and Prussia
 	opened new fronts toward Vienna). Single-front wars attack with everything.
+
+	A front is a connected component of at-war-enemy-held land provinces that
+	touches our border: two Japanese beachheads on different stretches of the
+	Chinese coast are two fronts even though Japan is one nation, Russia
+	fighting through allied Poland alongside Prussia is one front, and a
+	neutral buffer country between two enemies splits them into two.
 	*/
-	float total_army_weight = 0.0f;
-	uint32_t adjacent_enemy_fronts = 0;
-	{
-		std::vector<dcon::nation_id> adjacent_enemies;
-		for(auto c : state.world.nation_get_province_control(n)) {
-			for(auto padj : c.get_province().get_province_adjacency()) {
-				auto other = padj.get_connected_provinces(0) == c.get_province() ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
+	std::vector<dcon::province_id> front_provinces;
+	for(auto c : state.world.nation_get_province_control(n)) {
+		for(auto padj : c.get_province().get_province_adjacency()) {
+			auto other = padj.get_connected_provinces(0) == c.get_province() ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
+			if(other.id.index() >= state.province_definitions.first_sea_province.index())
+				continue;
+			auto n_controller = other.get_nation_from_province_control();
+			if(n_controller && military::are_at_war(state, n, n_controller)
+				&& std::find(front_provinces.begin(), front_provinces.end(), other.id) == front_provinces.end()) {
+				front_provinces.push_back(other.id);
+			}
+		}
+	}
+
+	// Pull in the at-war-enemy-held land provinces connected to the boundary, so
+	// the component count reflects how the enemy can actually move reserves.
+	bool expanded = true;
+	while(expanded) {
+		expanded = false;
+		for(uint32_t f = 0; f < front_provinces.size(); ++f) {
+			auto cur_fat = dcon::fatten(state.world, front_provinces[f]);
+			for(auto padj : cur_fat.get_province_adjacency()) {
+				auto other = padj.get_connected_provinces(0) == cur_fat ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
+				if(other.id.index() >= state.province_definitions.first_sea_province.index())
+					continue;
 				auto n_controller = other.get_nation_from_province_control();
 				if(n_controller && military::are_at_war(state, n, n_controller)
-					&& std::find(adjacent_enemies.begin(), adjacent_enemies.end(), n_controller) == adjacent_enemies.end()) {
-					adjacent_enemies.push_back(n_controller);
+					&& std::find(front_provinces.begin(), front_provinces.end(), other.id) == front_provinces.end()) {
+					front_provinces.push_back(other.id);
+					expanded = true;
 				}
 			}
 		}
-		adjacent_enemy_fronts = uint32_t(adjacent_enemies.size());
-		for(auto a : state.world.nation_get_army_control(n)) {
-			total_army_weight += ai::army_pressure_weight(state, a.get_army().id);
+	}
+
+	uint32_t adjacent_enemy_fronts = 0;
+	{
+		std::vector<char> visited(front_provinces.size(), 0);
+		for(uint32_t f = 0; f < front_provinces.size(); ++f) {
+			if(visited[f])
+				continue;
+			++adjacent_enemy_fronts;
+			std::vector<uint32_t> stack{ f };
+			visited[f] = 1;
+			while(!stack.empty()) {
+				auto cur = stack.back();
+				stack.pop_back();
+				auto cur_fat = dcon::fatten(state.world, front_provinces[cur]);
+				for(auto padj : cur_fat.get_province_adjacency()) {
+					auto other = padj.get_connected_provinces(0) == cur_fat ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
+					for(uint32_t g = 0; g < front_provinces.size(); ++g) {
+						if(!visited[g] && front_provinces[g] == other.id) {
+							visited[g] = 1;
+							stack.push_back(g);
+						}
+					}
+				}
+			}
 		}
+	}
+
+	float total_army_weight = 0.0f;
+	for(auto a : state.world.nation_get_army_control(n)) {
+		total_army_weight += ai::army_pressure_weight(state, a.get_army().id);
 	}
 	// 40% of the army stays available for the other fronts and the capital.
 	constexpr float strategic_reserve_fraction = 0.4f;
@@ -3043,6 +3095,7 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 			+ " assembly " + ai_log_prov_label(state, central_province)
 			+ " attackers=" + std::to_string(attack_armies.size())
 			+ " weight=" + std::to_string(attack_weight)
+			+ " fronts=" + std::to_string(adjacent_enemy_fronts)
 			+ " vs_defensive=" + std::to_string(target_attack_force)
 			+ " remaining_attacks=" + std::to_string(max_attacks_to_make - 1));
 		--max_attacks_to_make;
