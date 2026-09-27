@@ -161,3 +161,15 @@ aml_rec_s2;Все использовано
 aml_rec_s3;Нет
 mapmode_tooltip_34_no_ai;Не под управлением ИИ
 mapmode_tooltip_factory_size;Всего уровней:
+mapmode_45;Потери снабжения
+mapmode_46;Пропускная способность снабжения
+mapmode_47;Мощность портов снабжения
+mapmode_48;Эффективность пропускной способности снабжения
+legend_min_mapmode_45;Высокие потери снабжения
+legend_min_mapmode_46;Низкая пропускная способность
+legend_min_mapmode_47;Низкая мощность
+legend_min_mapmode_48;Низкая эффективность
+legend_max_mapmode_45;Низкие потери снабжения
+legend_max_mapmode_46;Высокая пропускная способность
+legend_max_mapmode_47;Высокая мощность
+legend_max_mapmode_48;Высокая эффективность
