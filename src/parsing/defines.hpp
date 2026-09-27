@@ -687,8 +687,9 @@
 		LUA_DEFINES_LIST_ELEMENT(alice_ai_hold_ratio, 0.750000)                                                                        \
 /* How far past the local hostile pressure a province's garrison must weigh before it stops pulling more guards */                  \
 		LUA_DEFINES_LIST_ELEMENT(alice_ai_guard_sufficiency, 1.500000)                                                                \
-/* How far reinforcements may push a battle province past its supply limit. 1.0 forbids overstacking outright; raise it */         \
-/* to let the AI accept attrition to win a battle it would otherwise be unable to feed reinforcements into. */                     \
+/* UNUSED right now: the battle supply cap was removed -- it counted enemy armies too and blocked all */
+/* reinforcement into a capital defense (Prague: friendly+enemy stack 114 vs limit 40, every day). */
+/* The knob is kept for a smarter cap that only weighs friendly stacks, if one is ever needed. */
 		LUA_DEFINES_LIST_ELEMENT(alice_ai_battle_supply_tolerance, 1.000000)                                                           \
 /* Armies below this supply score (0..1: best active route throughput x survival, or yesterday's regiment satisfaction) */         \
 /* are held out of offensives and battle gathering. 0 disables the filter. */                                                       \

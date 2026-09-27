@@ -2102,16 +2102,6 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 	float const token_pressure = std::max(0.0f, state.defines.alice_ai_token_pressure);
 	int32_t const max_commits = int32_t(std::clamp(state.defines.alice_ai_gather_max_commits, 1.0f, 64.0f));
 
-	/*
-	Post-battle attrition bites the whole stack left standing in the battle
-	province: relative_attrition_amount exempts armies while they fight, then
-	charges (weight - supply_limit) against everyone once the fight resolves.
-	The tolerance says how far past the limit reinforcement may push the pile;
-	raising it lets the AI accept attrition to force a battle. Zero disables.
-	*/
-	float const supply_tolerance = std::max(0.0f, state.defines.alice_ai_battle_supply_tolerance);
-	int32_t const battle_supply_limit = supply_tolerance > 0.0f ? military::supply_limit_in_province(state, n, p) : 0;
-
 	float committed = 0.0f;
 	int32_t commits = 0;
 
@@ -2164,22 +2154,6 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 				"no path: army#" + std::to_string(c.a.index()) + " from " + ai_log_prov_label(state, c.loc)
 				+ " to " + ai_log_prov_label(state, p));
 			continue;
-		}
-
-		/*
-		Same units as relative_attrition_amount: army weight against the
-		province's supply limit. `committed` counts what this pass has already
-		started marching; it has not arrived, but the sector has already given it
-		up, and next pass it will be standing in the pile.
-		*/
-		if(supply_tolerance > 0.0f) {
-			float const stack_weight = military::local_army_weight(state, p) + committed + send_w;
-			if(stack_weight > float(battle_supply_limit) * supply_tolerance) {
-				AI_LOG_N(state, 3, "reinforce", n,
-					"supply cap: " + ai_log_prov_label(state, p) + " stack_w=" + std::to_string(stack_weight)
-					+ " > limit=" + std::to_string(battle_supply_limit) + " x tol=" + std::to_string(supply_tolerance));
-				continue; // the fight can be joined; the pile afterwards cannot be fed
-			}
 		}
 
 		// Путь есть: отделяем требуемый вес
