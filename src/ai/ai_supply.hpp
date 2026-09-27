@@ -15,9 +15,11 @@ float army_supply_score(sys::state& state, dcon::army_id army);
 
 /*
 Supply quality of a province for one nation, from the per-nation caches that
-update_nations_supply_cache refreshes daily. Zero where no delivery is possible
-for this nation; otherwise graded down by the loss cache. Cheap enough to read
-per candidate province inside a decision pass.
+update_nations_supply_cache refreshes daily -- normalized against the nation's
+capital, since the absolute throughput is zero for everyone early in the game.
+Zero where no delivery is possible for this nation; 1.0 when the nation has no
+measurable supply network at all (floors then pass and nothing is vetoed).
+Cheap enough to read per candidate province inside a decision pass.
 */
 float province_supply_quality(sys::state const& state, dcon::nation_id n, dcon::province_id prov);
 

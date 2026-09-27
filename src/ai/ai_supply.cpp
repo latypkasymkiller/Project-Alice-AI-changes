@@ -53,13 +53,29 @@ float army_supply_score(sys::state& state, dcon::army_id army) {
 }
 
 float province_supply_quality(sys::state const& state, dcon::nation_id n, dcon::province_id prov) {
+	/*
+	The throughput cache is an absolute goods volume, and early in the game the
+	base modifiers are zero for everyone -- the whole map then reads as zero and
+	an absolute floor vetoes every march in the empire (638 cancelled guard
+	marches in the first logged campaign). Normalized instead against the
+	capital: a nation's capital is the one province that is always supplied, so
+	"how much of the capital's throughput does this province get" is meaningful
+	in every era. When even the capital reads zero there is no network to
+	measure, and filtering would be pure noise -- the quality reads as 1.0 so
+	that every floor passes and nothing is vetoed.
+	*/
+	auto cap = state.world.nation_get_capital(n);
+	float const reference = cap ? state.world.nation_get_prov_supply_throughput_cache(n, cap) : 0.0f;
+	if(reference <= 0.0f)
+		return 1.0f;
+
 	float const throughput = state.world.nation_get_prov_supply_throughput_cache(n, prov);
 	if(throughput <= 0.0f)
 		return 0.0f;
 	// The loss cache is a per-distance fraction; treated here as an indicator --
 	// graded quality, not a prediction of what one specific route would deliver.
 	float const loss = state.world.nation_get_prov_supply_loss_cache(n, prov);
-	return std::clamp(1.0f - loss, 0.0f, 1.0f);
+	return std::clamp((throughput / reference) * (1.0f - loss), 0.0f, 1.0f);
 }
 
 bool is_friendly_supply_zone(sys::state const& state, dcon::nation_id n, dcon::province_id prov) {
