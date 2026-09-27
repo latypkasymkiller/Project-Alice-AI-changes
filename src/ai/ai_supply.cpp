@@ -78,25 +78,8 @@ float province_supply_quality(sys::state const& state, dcon::nation_id n, dcon::
 	return std::clamp((throughput / reference) * (1.0f - loss), 0.0f, 1.0f);
 }
 
-bool is_friendly_supply_zone(sys::state const& state, dcon::nation_id n, dcon::province_id prov) {
-	auto const controller = state.world.province_get_nation_from_province_control(prov);
-	if(controller == n)
-		return true;
-	if(!controller)
-		return false;
-	if(auto dip_rel = state.world.get_diplomatic_relation_by_diplomatic_pair(controller, n);
-		state.world.diplomatic_relation_get_are_allied(dip_rel)) {
-		return true;
-	}
-	return military::are_allied_in_war(state, n, controller);
-}
-
 float army_supply_floor(sys::state const& state) {
 	return supply_define_f(state.defines.alice_ai_army_supply_floor, 0.0f, 1.0f);
-}
-
-float march_supply_floor(sys::state const& state) {
-	return supply_define_f(state.defines.alice_ai_march_supply_floor, 0.0f, 1.0f);
 }
 
 float assembly_supply_weight(sys::state const& state) {

@@ -16,29 +16,17 @@ float army_supply_score(sys::state& state, dcon::army_id army);
 /*
 Supply quality of a province for one nation, from the per-nation caches that
 update_nations_supply_cache refreshes daily -- normalized against the nation's
-capital, since the absolute throughput is zero for everyone early in the game.
-Zero where no delivery is possible for this nation; 1.0 when the nation has no
-measurable supply network at all (floors then pass and nothing is vetoed).
-Cheap enough to read per candidate province inside a decision pass.
+capital, since the absolute throughput is zero for everyone early in the game
+and at war fronts. Used as a soft tie-break when picking assault assembly
+points; deliberately NOT used to veto marches, because a zero cache at the
+front says nothing about whether the march makes sense.
 */
 float province_supply_quality(sys::state const& state, dcon::nation_id n, dcon::province_id prov);
-
-/*
-True where a supply-quality reading is meaningful to judge for this nation: the
-province is controlled by n, or held by an ally. Hostile ground is exempt from
-march-floor vetoes, because its cache reads zero even when the advance itself is
-sound -- the province is not ours to supply until it is taken.
-*/
-bool is_friendly_supply_zone(sys::state const& state, dcon::nation_id n, dcon::province_id prov);
 
 // Tunables, clamped per the define_f discipline in ai_pressure.cpp.
 
 // Armies below this score are held out of offensives and battle gathering. 0 disables.
 float army_supply_floor(sys::state const& state);
-
-// Land marches into one of our or an ally's provinces below this quality are
-// refused. 0 disables.
-float march_supply_floor(sys::state const& state);
 
 // Relative distance penalty for gathering an assault in a province our supply
 // does not reach: 1.0 doubles the effective distance of a zero-quality candidate.

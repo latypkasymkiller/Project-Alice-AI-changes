@@ -717,26 +717,6 @@ void validate_ai_orders(sys::state& state) {
 
 				auto battles = state.world.province_get_land_battle_location(next);
 				if(battles.begin() == battles.end()) {
-					/*
-					No delivery reaches the next province while it is ours or an ally's: the
-					march would end in a pocket where org never recovers. Hostile ground is
-					exempt -- its cache reads zero even when the advance is sound. Mirrors the
-					pressure veto below: stop the march and release the station, so
-					distribute_guards re-decides instead of re-issuing the same order.
-					*/
-					float const march_floor = ai::march_supply_floor(state);
-					if(march_floor > 0.0f
-						&& ai::province_supply_quality(state, controller, next) < march_floor
-						&& ai::is_friendly_supply_zone(state, controller, next)) {
-						AI_LOG_N(state, 3, "cleanup", controller,
-							"cancel guard into dead supply: army#" + std::to_string(ar.id.index())
-							+ " next " + ai_log_prov_label(state, next)
-							+ " quality=" + std::to_string(ai::province_supply_quality(state, controller, next))
-							+ " floor=" + std::to_string(march_floor));
-						military::stop_army_movement(state, ar);
-						ar.set_ai_province(dcon::province_id{});
-					}
-
 					float hostile_there = 0.0f;
 					float friendly_there = ai::army_pressure_weight(state, ar.id);
 
@@ -3129,24 +3109,8 @@ void move_gathered_attackers(sys::state& state) {
 							}
 						}
 
-						// Land march is permitted ONLY to adjacent sectors or via safe territory,
-						// and only into ground our routes can reach while it is ours or an ally's:
-						// a zero-quality friendly destination is an org-dead pocket. Hostile ground
-						// is exempt -- its cache reads zero even when the advance is sound.
-						float const march_floor = ai::march_supply_floor(state);
-						bool const dead_supply = march_floor > 0.0f
-							&& ai::province_supply_quality(state, ar.get_controller_from_army_control(), target_prov) < march_floor
-							&& ai::is_friendly_supply_zone(state, ar.get_controller_from_army_control(), target_prov);
-						if(dead_supply) {
-							AI_LOG_N(state, 3, "attack", ar.get_controller_from_army_control(),
-								"march into dead supply diverted: army#" + std::to_string(ar.id.index())
-								+ " to " + ai_log_prov_label(state, target_prov)
-								+ " quality=" + std::to_string(ai::province_supply_quality(state, ar.get_controller_from_army_control(), target_prov))
-								+ " floor=" + std::to_string(march_floor));
-						}
-
 						// Land march is permitted ONLY to adjacent sectors or via safe territory
-						if((is_adjacent || is_safe_path) && !dead_supply) {
+						if(is_adjacent || is_safe_path) {
 							if(auto path = province::make_land_unit_path(state, army_loc.id, target_prov, ar.get_controller_from_army_control(), ar); path.size() > 0) {
 								for(auto o : army_loc.get_army_location()) {
 									if(o.get_army().get_ai_province() == target_prov

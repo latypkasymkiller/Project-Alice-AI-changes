@@ -693,9 +693,6 @@
 /* Armies below this supply score (0..1: best active route throughput x survival, or yesterday's regiment satisfaction) */         \
 /* are held out of offensives and battle gathering. 0 disables the filter. */                                                       \
 		LUA_DEFINES_LIST_ELEMENT(alice_ai_army_supply_floor, 0.200000)                                                                \
-/* A land march into one of our or an ally's provinces whose supply quality is below this is cancelled; hostile ground is */       \
-/* exempt, because its cache reads zero even when the advance is sound. 0 disables the check. */                                    \
-		LUA_DEFINES_LIST_ELEMENT(alice_ai_march_supply_floor, 0.050000)                                                               \
 /* Relative distance penalty for gathering an assault in a province our supply does not reach: 1.0 doubles the effective */       \
 /* distance of a zero-quality candidate, so plain distance still dominates. */                                                      \
 		LUA_DEFINES_LIST_ELEMENT(alice_ai_assembly_supply_weight, 1.000000)                                                           \
