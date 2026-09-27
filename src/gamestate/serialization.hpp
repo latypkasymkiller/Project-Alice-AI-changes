@@ -197,10 +197,7 @@ inline uint8_t const* deserialize(uint8_t const* ptr_in, ankerl::unordered_dense
 // element count, and so the struct size, is unchanged -- which is exactly why this bump is
 // needed. Without it an older .bin would load and be accepted, and the 10.0 sitting at that
 // offset would be read as a supply tolerance, silently lifting the cap it is meant to impose.
-// 48: parsing::defines gained alice_ai_guard_sufficiency. Same hazard as 46: the struct grew,
-// so a pre-48 scenario blob is read at the wrong offsets and dies as "scenario could not be
-// read" rather than being rejected by version.
-constexpr inline uint32_t save_file_version = 48;
+constexpr inline uint32_t save_file_version = 47;
 constexpr inline uint32_t scenario_file_version = 139 + save_file_version;
 
 struct scenario_header {
