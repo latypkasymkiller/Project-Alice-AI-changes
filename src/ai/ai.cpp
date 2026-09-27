@@ -1,6 +1,7 @@
 #include "ai.hpp"
 #include "ai_pressure.hpp"
 #include "ai_supply.hpp"
+#include "ai_log.hpp"
 #include "ai_types.hpp"
 #include "ai_campaign_values.hpp"
 #include "system_state.hpp"
@@ -697,6 +698,8 @@ void validate_ai_orders(sys::state& state) {
 				if(!any_live_battle) {
 					// The station is left alone, so move_idle_guards walks the army back to
 					// its post rather than leaving it standing in the open.
+					AI_LOG_N(state, 3, "cleanup", controller,
+						"cancel guard detour: army#" + std::to_string(ar.id.index()) + " path has no live battle");
 					military::stop_army_movement(state, ar);
 					cancelled = true;
 				}
@@ -725,6 +728,11 @@ void validate_ai_orders(sys::state& state) {
 					if(march_floor > 0.0f
 						&& ai::province_supply_quality(state, controller, next) < march_floor
 						&& ai::is_friendly_supply_zone(state, controller, next)) {
+						AI_LOG_N(state, 3, "cleanup", controller,
+							"cancel guard into dead supply: army#" + std::to_string(ar.id.index())
+							+ " next " + ai_log_prov_label(state, next)
+							+ " quality=" + std::to_string(ai::province_supply_quality(state, controller, next))
+							+ " floor=" + std::to_string(march_floor));
 						military::stop_army_movement(state, ar);
 						ar.set_ai_province(dcon::province_id{});
 					}
@@ -749,6 +757,10 @@ void validate_ai_orders(sys::state& state) {
 					}
 
 					if(hostile_there > 0.0f && hostile_there > sufficiency * friendly_there) {
+						AI_LOG_N(state, 3, "cleanup", controller,
+							"cancel guard into hostile: army#" + std::to_string(ar.id.index())
+							+ " next " + ai_log_prov_label(state, next)
+							+ " hostile=" + std::to_string(hostile_there) + " friendly=" + std::to_string(friendly_there));
 						military::stop_army_movement(state, ar);
 
 						// The station goes with the march. Cancelling the path alone left the
@@ -780,6 +792,9 @@ void validate_ai_orders(sys::state& state) {
 						|| military::are_allied_in_war(state, controller, station_controller));
 
 				if(!valid) {
+					AI_LOG_N(state, 3, "cleanup", controller,
+						"cancel guard station: army#" + std::to_string(ar.id.index())
+						+ " station " + ai_log_prov_label(state, station) + " no longer ours/reachable");
 					military::stop_army_movement(state, ar.id);
 					ar.set_ai_province(dcon::province_id{});
 				}
@@ -805,6 +820,9 @@ void validate_ai_orders(sys::state& state) {
 				&& !(occupier && military::are_at_war(state, controller, occupier));
 
 			if(nothing_left) {
+				AI_LOG_N(state, 3, "cleanup", controller,
+					"attack arrived with nothing left: army#" + std::to_string(ar.id.index())
+					+ " at " + ai_log_prov_label(state, location));
 				ar.set_ai_activity(uint8_t(army_activity::on_guard));
 				ar.set_ai_province(dcon::province_id{});
 			}
@@ -1351,6 +1369,24 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 	if(guards_list.empty())
 		return;
 
+	if(ai_log_enabled(2) && ai_log_nation_enabled(state, n)) {
+		std::string enemies;
+		for(auto w : state.world.nation_get_war_participant(n)) {
+			for(auto p : w.get_war().get_war_participant()) {
+				auto enemy = p.get_nation().id;
+				if(enemy && military::are_at_war(state, n, enemy)) {
+					std::string label = ai_log_nation_label(state, enemy);
+					if(enemies.find(label) == std::string::npos)
+						enemies += (enemies.empty() ? "" : ", ") + label;
+				}
+			}
+		}
+		ai_log_message(state, 2, "defense",
+			"distribute_guards: " + ai_log_nation_label(state, n)
+			+ " guards=" + std::to_string(guards_list.size())
+			+ " at_war_with=[" + enemies + "]");
+	}
+
 	// Strategic horizon: an army tied up in a battle still counts, at a discount, because
 	// the battle will end and the mass will still be there.
 	static thread_local ai::pressure_field guard_field;
@@ -1505,6 +1541,30 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 		return a.id.index() < b.id.index();
 	});
 
+	// The stage loop mans the list head-first, so the head of this list is where
+	// the next guards physically go. Read together with the station summary at
+	// the end of the function when a garrison piles up somewhere odd.
+	if(ai_log_enabled(3) && ai_log_nation_enabled(state, n)) {
+		uint32_t per_tier[uint8_t(province_class::count)] = { 0 };
+		for(auto& cp : provinces)
+			++per_tier[uint8_t(cp.c)];
+		std::string hist;
+		for(uint8_t t = uint8_t(province_class::count); t-- > 0;) {
+			if(per_tier[t])
+				hist += " t" + std::to_string(t) + "=" + std::to_string(per_tier[t]);
+		}
+		ai_log_message(state, 3, "defense", "classified provinces:" + hist);
+		uint32_t shown = 0;
+		for(auto& cp : provinces) {
+			if(shown >= 12)
+				break;
+			ai_log_message(state, 4, "defense",
+				"sorted[" + std::to_string(shown) + "] " + ai_log_prov_label(state, cp.id)
+				+ " tier=" + std::to_string(uint8_t(cp.c)) + " pressure=" + std::to_string(int(cp.pressure)));
+			++shown;
+		}
+	}
+
 	// distribute target provinces
 	uint32_t end_of_stage = 0;
 
@@ -1589,6 +1649,29 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 			++full_loops_through;
 		} while(guard_assigned);
 
+	}
+
+	// Post-assignment summary: which stations collected how many guards. This is
+	// the line to read when a garrison piles up somewhere odd.
+	if(ai_log_enabled(2) && ai_log_nation_enabled(state, n)) {
+		std::vector<std::pair<dcon::province_id, uint32_t>> stations;
+		for(auto a : state.world.nation_get_army_control(n)) {
+			if(a.get_army().get_ai_activity() != uint8_t(army_activity::on_guard))
+				continue;
+			auto st = a.get_army().get_ai_province();
+			if(!st)
+				continue;
+			auto it = std::find_if(stations.begin(), stations.end(), [st](auto& v) { return v.first == st; });
+			if(it != stations.end())
+				++it->second;
+			else
+				stations.emplace_back(st, 1);
+		}
+		std::sort(stations.begin(), stations.end(), [](auto& a, auto& b) { return a.second > b.second; });
+		for(auto& s : stations) {
+			ai_log_message(state, 2, "defense",
+				"station " + ai_log_prov_label(state, s.first) + " guards=" + std::to_string(s.second));
+		}
 	}
 }
 
@@ -1906,14 +1989,21 @@ one battle, so the AI stops emptying a theatre into a fight it has already won.
 // MP compliant
 void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p) {
 	if(!ai::pressure_enabled(state) || !state.world.nation_get_is_at_war(n)) {
+		AI_LOG_N(state, 3, "reinforce", n,
+			"gather_to_battle (legacy): " + ai_log_prov_label(state, p));
 		gather_to_battle_legacy(state, n, p);
 		return;
 	}
 
+	AI_LOG_N(state, 3, "reinforce", n,
+		"gather_to_battle: " + ai_log_nation_label(state, n) + " battle at " + ai_log_prov_label(state, p));
+
 	float hostile_engaged = 0.0f;
 	float friendly_engaged = 0.0f;
-	if(!ai::battle_side_weights(state, n, p, hostile_engaged, friendly_engaged))
+	if(!ai::battle_side_weights(state, n, p, hostile_engaged, friendly_engaged)) {
+		AI_LOG_N(state, 3, "reinforce", n, "skip gather: battle already over at " + ai_log_prov_label(state, p));
 		return; // the fighting is already over
+	}
 
 	struct candidate {
 		dcon::army_id a;
@@ -1925,6 +2015,7 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 	// Candidates are gathered before the field is touched: a nation with nothing within
 	// reach must not pay for building one.
 	std::vector<candidate> candidates;
+	uint32_t supply_excluded = 0;
 	for(auto ar : state.world.nation_get_army_control(n)) {
 		army_activity activity = army_activity(ar.get_army().get_ai_activity());
 		if(ar.get_army().get_battle_from_army_battle_participation()
@@ -1951,14 +2042,21 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 
 		// An army no route reaches recovers no org; marching it to the battle
 		// only enlarges the pile that starts bleeding when the fight ends.
-		if(ai::army_supply_score(state, ar.get_army().id) < ai::army_supply_floor(state))
+		if(ai::army_supply_score(state, ar.get_army().id) < ai::army_supply_floor(state)) {
+			++supply_excluded;
 			continue;
+		}
 
 		candidates.push_back(candidate{ ar.get_army().id, location.id, sdist, w });
 	}
 
 	if(candidates.empty())
 		return;
+
+	if(supply_excluded) {
+		AI_LOG_N(state, 3, "reinforce", n,
+			"gather supply floor excluded " + std::to_string(supply_excluded) + " candidates for " + ai_log_prov_label(state, p));
+	}
 
 	/*
 	What still has to be sent, discounting help already on the road. Without that discount the
@@ -1977,8 +2075,13 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 		- friendly_engaged
 		- inbound;
 
-	if(need <= 0.0f)
+	if(need <= 0.0f) {
+		AI_LOG_N(state, 4, "reinforce", n,
+			"no reinforcement needed: " + ai_log_prov_label(state, p)
+			+ " hostile=" + std::to_string(hostile_engaged) + " friendly=" + std::to_string(friendly_engaged)
+			+ " inbound=" + std::to_string(inbound));
 		return;
+	}
 
 
 	// Nearest first: sorting_distance is the negated cosine of the arc, so smaller is
@@ -2043,13 +2146,21 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 		bool const overwhelm = facing <= token_pressure;
 		bool const cover_remains = std::max(0.0f, cover - send_w) >= hold_ratio * facing;
 
-		if(is_frontline && !overwhelm && !cover_remains)
+		if(is_frontline && !overwhelm && !cover_remains) {
+			AI_LOG_N(state, 4, "reinforce", n,
+				"hold the line: army#" + std::to_string(c.a.index()) + " for " + ai_log_prov_label(state, p)
+				+ " facing=" + std::to_string(facing) + " cover=" + std::to_string(cover));
 			continue; // hold the line
+		}
 
 		// Напрямую проверяем путь. Если пути нет — сразу переходим к следующему кандидату, не трогая армию
 		auto path = province::make_land_unit_path(state, c.loc, p, n, c.a);
-		if(path.empty())
+		if(path.empty()) {
+			AI_LOG_N(state, 4, "reinforce", n,
+				"no path: army#" + std::to_string(c.a.index()) + " from " + ai_log_prov_label(state, c.loc)
+				+ " to " + ai_log_prov_label(state, p));
 			continue;
+		}
 
 		/*
 		Same units as relative_attrition_amount: army weight against the
@@ -2059,8 +2170,12 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 		*/
 		if(supply_tolerance > 0.0f) {
 			float const stack_weight = military::local_army_weight(state, p) + committed + send_w;
-			if(stack_weight > float(battle_supply_limit) * supply_tolerance)
+			if(stack_weight > float(battle_supply_limit) * supply_tolerance) {
+				AI_LOG_N(state, 3, "reinforce", n,
+					"supply cap: " + ai_log_prov_label(state, p) + " stack_w=" + std::to_string(stack_weight)
+					+ " > limit=" + std::to_string(battle_supply_limit) + " x tol=" + std::to_string(supply_tolerance));
 				continue; // the fight can be joined; the pile afterwards cannot be fed
+			}
 		}
 
 		// Путь есть: отделяем требуемый вес
@@ -2077,6 +2192,9 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 
 		committed += actual_w;
 		++commits;
+		AI_LOG_N(state, 4, "reinforce", n,
+			"committed: army#" + std::to_string(army_to_send.index()) + " to " + ai_log_prov_label(state, p)
+			+ " weight=" + std::to_string(actual_w) + " total=" + std::to_string(committed) + "/" + std::to_string(need));
 	}
 }
 
@@ -2432,6 +2550,7 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 	ready_armies.reserve(state.world.province_size());
 
 	int32_t ready_count = 0;
+	uint32_t supply_rejected = 0;
 	for(auto ar : state.world.nation_get_army_control(n)) {
 		army_activity activity = army_activity(ar.get_army().get_ai_activity());
 		if(ar.get_army().get_battle_from_army_battle_participation()
@@ -2439,9 +2558,13 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 			|| ar.get_army().get_black_flag()
 			|| ar.get_army().get_arrival_time()
 			|| activity != army_activity::on_guard
-			|| !army_ready_for_battle(state, n, ar.get_army())
-			|| ai::army_supply_score(state, ar.get_army().id) < army_supply_floor_v) {
+			|| !army_ready_for_battle(state, n, ar.get_army())) {
 
+			continue;
+		}
+
+		if(ai::army_supply_score(state, ar.get_army().id) < army_supply_floor_v) {
+			++supply_rejected;
 			continue;
 		}
 
@@ -2516,6 +2639,26 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 
 	bool has_any_frontline_target = false;
 
+	if(ai_log_enabled(2) && ai_log_nation_enabled(state, n)) {
+		std::string enemies;
+		for(auto w : state.world.nation_get_war_participant(n)) {
+			for(auto p : w.get_war().get_war_participant()) {
+				auto enemy = p.get_nation().id;
+				if(enemy && military::are_at_war(state, n, enemy)) {
+					std::string label = ai_log_nation_label(state, enemy);
+					if(enemies.find(label) == std::string::npos)
+						enemies += (enemies.empty() ? "" : ", ") + label;
+				}
+			}
+		}
+		ai_log_message(state, 2, "attack",
+			"assign_targets: " + ai_log_nation_label(state, n)
+			+ " staging=" + std::to_string(ready_armies.size())
+			+ " targets=" + std::to_string(potential_targets.size())
+			+ " supply_rejected=" + std::to_string(supply_rejected)
+			+ " at_war_with=[" + enemies + "]");
+	}
+
 	for(auto& pt : potential_targets) {
 		for(uint32_t i = uint32_t(ready_armies.size()); i-- > 1;) {
 			auto sdist = province::sorting_distance(state, ready_armies[i].p, pt.location);
@@ -2573,8 +2716,10 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 			continue; // target has been removed as too close by some earlier iteration
 
 		// If frontline objectives exist, strictly forbid attacks deep in the rear
-		if(has_any_frontline_target && potential_targets[i].minimal_distance > 50000.0f)
+		if(has_any_frontline_target && potential_targets[i].minimal_distance > 50000.0f) {
+			AI_LOG_N(state, 3, "attack", n, "stop scanning: only rear targets remain for " + ai_log_nation_label(state, n));
 			break;
+		}
 
 		if(potential_targets[i].strength_estimate == 0.0f)
 			potential_targets[i].strength_estimate = estimate_enemy_defensive_force(state, potential_targets[i].location, n) + 0.00001f;
@@ -2663,6 +2808,9 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		}
 
 		if(a_force_str < target_attack_force) {
+			AI_LOG_N(state, 3, "attack", n,
+				"skip target too strong: " + ai_log_prov_label(state, potential_targets[i].location)
+				+ " have=" + std::to_string(a_force_str) + " need=" + std::to_string(target_attack_force));
 			continue; // Target is too strong for remaining available forces, skip and check others
 		}
 
@@ -2820,6 +2968,11 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		}
 
 		ready_armies.resize(k + 1);
+		AI_LOG_N(state, 2, "attack", n,
+			"attack ordered: target " + ai_log_prov_label(state, potential_targets[i].location)
+			+ " assembly " + ai_log_prov_label(state, central_province)
+			+ " force=" + std::to_string(a_force_str) + " vs_defensive=" + std::to_string(target_attack_force)
+			+ " remaining_attacks=" + std::to_string(max_attacks_to_make - 1));
 		--max_attacks_to_make;
 
 		// remove subsequent targets that are too close
@@ -2870,6 +3023,9 @@ void move_gathered_attackers(sys::state& state) {
 				if(province::has_access_to_province(state, ar.get_controller_from_army_control(), ar.get_ai_province())) {
 					require_transport.push_back(ar.id);
 				} else {
+					AI_LOG_N(state, 3, "attack", ar.get_controller_from_army_control(),
+						"attack_transport cancelled (no access to target): army#" + std::to_string(ar.id.index())
+						+ " target " + ai_log_prov_label(state, ar.get_ai_province()));
 					ar.set_ai_activity(uint8_t(army_activity::on_guard));
 					ar.set_ai_province(dcon::province_id{});
 				}
@@ -2881,7 +3037,9 @@ void move_gathered_attackers(sys::state& state) {
 
 				if(ar.get_location_from_army_location() == ar.get_ai_province()) { // attack finished ?
 					if(ar.get_location_from_army_location().get_nation_from_province_control() && !military::are_at_war(state, ar.get_location_from_army_location().get_nation_from_province_control(), ar.get_controller_from_army_control())) {
-
+						AI_LOG_N(state, 3, "attack", ar.get_controller_from_army_control(),
+							"attack_gathered ended (no enemy at " + ai_log_prov_label(state, ar.get_ai_province())
+							+ "): army#" + std::to_string(ar.id.index()));
 						ar.set_ai_activity(uint8_t(army_activity::on_guard));
 						ar.set_ai_province(dcon::province_id{});
 					}
@@ -2955,6 +3113,13 @@ void move_gathered_attackers(sys::state& state) {
 						bool const dead_supply = march_floor > 0.0f
 							&& ai::province_supply_quality(state, ar.get_controller_from_army_control(), target_prov) < march_floor
 							&& ai::is_friendly_supply_zone(state, ar.get_controller_from_army_control(), target_prov);
+						if(dead_supply) {
+							AI_LOG_N(state, 3, "attack", ar.get_controller_from_army_control(),
+								"march into dead supply diverted: army#" + std::to_string(ar.id.index())
+								+ " to " + ai_log_prov_label(state, target_prov)
+								+ " quality=" + std::to_string(ai::province_supply_quality(state, ar.get_controller_from_army_control(), target_prov))
+								+ " floor=" + std::to_string(march_floor));
+						}
 
 						// Land march is permitted ONLY to adjacent sectors or via safe territory
 						if((is_adjacent || is_safe_path) && !dead_supply) {
@@ -2983,6 +3148,9 @@ void move_gathered_attackers(sys::state& state) {
 							}
 						} else {
 							// Distant continental targets with no direct safe access -> cancel march to avoid attrition deaths
+							AI_LOG_N(state, 3, "attack", ar.get_controller_from_army_control(),
+								"distant target cancelled: army#" + std::to_string(ar.id.index())
+								+ " to " + ai_log_prov_label(state, target_prov));
 							ar.set_ai_activity(uint8_t(army_activity::on_guard));
 							ar.set_ai_province(dcon::province_id{});
 						}
