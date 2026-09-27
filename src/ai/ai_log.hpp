@@ -30,6 +30,27 @@ defined) or the process working directory otherwise. A single mutex serializes
 writes from the parallel_for AI passes.
 */
 
+// Single shared sink: one file handle, every write serialized. Function-local
+// statics inside an inline function are one instance across all TUs.
+inline std::mutex& ai_log_mutex() {
+	static std::mutex mtx;
+	return mtx;
+}
+
+inline std::ofstream& ai_log_stream() {
+	static std::ofstream out;
+	static bool opened = false;
+	if(!opened) {
+		opened = true;
+#ifdef PROJECT_ROOT
+		out.open(PROJECT_ROOT "/alice_ai.log", std::ios::out | std::ios::app);
+#else
+		out.open("alice_ai.log", std::ios::out | std::ios::app);
+#endif
+	}
+	return out;
+}
+
 inline int ai_log_max_level() {
 	static bool opened = false;
 	static int level = 0;
@@ -48,6 +69,22 @@ inline int ai_log_max_level() {
 				}
 			}
 			level = std::clamp(level, 0, 5);
+		}
+		/*
+		Announce the parse even before any nation filter runs: without this line a
+		silent log cannot distinguish "environment never reached the process" from
+		"the tag filter matched nothing". If this line is absent, ALICE_AI_LOG did
+		not arrive -- check how the game was launched.
+		*/
+		if(level > 0) {
+			std::lock_guard<std::mutex> lock(ai_log_mutex());
+			auto& out = ai_log_stream();
+			if(out.is_open()) {
+				char const* tag = std::getenv("ALICE_AI_LOG_TAG");
+				out << "=== ai logger enabled: level=" << level
+					<< " tag_filter='" << (tag && *tag ? tag : "(all nations)") << "' ===\n";
+				out.flush();
+			}
 		}
 	}
 	return level;
@@ -99,18 +136,8 @@ inline std::string ai_log_prov_label(sys::state& state, dcon::province_id p) {
 }
 
 inline void ai_log_message(sys::state const& state, int level, std::string_view category, std::string_view message) {
-	static std::mutex mtx;
-	static std::ofstream out;
-	static bool opened = false;
-	std::lock_guard<std::mutex> lock(mtx);
-	if(!opened) {
-		opened = true;
-#ifdef PROJECT_ROOT
-		out.open(PROJECT_ROOT "/alice_ai.log", std::ios::out | std::ios::app);
-#else
-		out.open("alice_ai.log", std::ios::out | std::ios::app);
-#endif
-	}
+	std::lock_guard<std::mutex> lock(ai_log_mutex());
+	auto& out = ai_log_stream();
 	if(!out.is_open())
 		return;
 	auto d = state.current_date.to_ymd(state.start_date);
