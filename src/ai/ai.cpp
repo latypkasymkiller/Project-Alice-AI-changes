@@ -2400,7 +2400,7 @@ float estimate_win_probability(sys::state& state, std::vector<dcon::army_id> con
 
 	dcon::leader_id d_lid;
 	float d_score = -999.f;
-	for(const auto a : attacker) {
+	for(const auto a : defender) {
 		auto candidate = state.world.army_get_general_from_army_leadership(a);
 		// if its no leader, skip
 		if(!candidate) {
@@ -2854,11 +2854,16 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		if(!central_province)
 			continue;
 
-		// issue safe-move gather command
+		/*
+		Собираем армии для атаки ДО отдачи приказов. Раньше приказы отдавались
+		армия за армией прямо здесь -- на цель уходили остатки по 13-82 человека,
+		таявшие в горах от истощения (Цетине: сила атак 1163 -> 82 -> 13 за одну
+		кампанию). Теперь сначала полный список и общий вес, затем симуляция боя
+		(estimate_win_probability), и только при приемлемых шансах -- приказы.
+		*/
+		std::vector<dcon::army_id> attack_armies;
+		float attack_weight = 0.0f;
 		for(int32_t m = int32_t(ready_armies.size()); m-- > k + 1; ) {
-			assert(m >= 0 && m < int32_t(ready_armies.size()));
-
-			// СОЗДАЕМ БУФЕР, ЧТОБЫ НЕ СЛОМАТЬ ИТЕРАТОРЫ ПРИ СОЗДАНИИ НОВЫХ АРМИЙ
 			std::vector<dcon::army_id> armies_to_process;
 			for(auto ar : state.world.province_get_army_location(ready_armies[m].p)) {
 				armies_to_process.push_back(ar.get_army().id);
@@ -2927,21 +2932,62 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 					continue; // Hold frontline sector
 				}
 
-				dcon::army_id army_to_send = split_army_for_weight(state, n, arid, target_attack_force);
-				float const actual_w = use_pressure ? ai::army_pressure_weight(state, army_to_send) : 0.0f;
+				attack_armies.push_back(arid);
+				attack_weight += ai::army_pressure_weight(state, arid);
+			}
+		}
 
-				if(use_pressure && actual_w > 0.0f) {
-					ai::debit_friendly_at(state, *attack_field, loc_fat.id, actual_w, n);
-				}
+		if(attack_armies.empty()) {
+			ready_armies.resize(k + 1);
+			continue;
+		}
 
-				if(ready_armies[m].p == central_province) {
-					state.world.army_set_ai_province(army_to_send, potential_targets[i].location);
-					state.world.army_set_ai_activity(army_to_send, uint8_t(army_activity::attacking));
-				} else if(auto path = province::make_safe_land_path(state, ready_armies[m].p, central_province, n); !path.empty()) {
-					military::set_army_path(state, army_to_send, path, n);
-					state.world.army_set_ai_province(army_to_send, potential_targets[i].location);
-					state.world.army_set_ai_activity(army_to_send, uint8_t(army_activity::attacking));
-				}
+		/*
+		Симуляция боя до приказа: estimate_win_probability учитывает состав и
+		состояние полков, рельеф цели, окопанность, переправы и генералов. Голое
+		сравнение силовых очков (82 > 1.95) посылало на убой отряды, не имевшие
+		шансов против реальной обороны в горах.
+		*/
+		std::vector<dcon::army_id> defenders;
+		for(auto ar : state.world.province_get_army_location(potential_targets[i].location)) {
+			auto d_controller = ar.get_army().get_controller_from_army_control();
+			if(!d_controller || military::are_at_war(state, n, d_controller)) {
+				defenders.push_back(ar.get_army().id);
+			}
+		}
+
+		if(!defenders.empty()) {
+			float const win_chance = estimate_win_probability(state, attack_armies, defenders);
+			// Порог подтверждается плейтестом: ниже -- копить силы или ждать мира.
+			constexpr float min_attack_win_chance = 0.65f;
+			if(win_chance < min_attack_win_chance) {
+				AI_LOG_N(state, 3, "attack", n,
+					"attack cancelled by simulation: target " + ai_log_prov_label(state, potential_targets[i].location)
+					+ " win_chance=" + std::to_string(win_chance)
+					+ " attackers=" + std::to_string(attack_armies.size())
+					+ " weight=" + std::to_string(attack_weight));
+				continue; // ждать массы -- крошками горы не берутся
+			}
+		}
+
+		for(auto arid : attack_armies) {
+			auto ar_army = dcon::fatten(state.world, arid);
+			auto loc_fat = ar_army.get_location_from_army_location();
+
+			dcon::army_id army_to_send = split_army_for_weight(state, n, arid, target_attack_force);
+			float const actual_w = use_pressure ? ai::army_pressure_weight(state, army_to_send) : 0.0f;
+
+			if(use_pressure && actual_w > 0.0f) {
+				ai::debit_friendly_at(state, *attack_field, loc_fat.id, actual_w, n);
+			}
+
+			if(loc_fat.id == central_province) {
+				state.world.army_set_ai_province(army_to_send, potential_targets[i].location);
+				state.world.army_set_ai_activity(army_to_send, uint8_t(army_activity::attacking));
+			} else if(auto path = province::make_safe_land_path(state, loc_fat.id, central_province, n); !path.empty()) {
+				military::set_army_path(state, army_to_send, path, n);
+				state.world.army_set_ai_province(army_to_send, potential_targets[i].location);
+				state.world.army_set_ai_activity(army_to_send, uint8_t(army_activity::attacking));
 			}
 		}
 
@@ -2949,7 +2995,9 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		AI_LOG_N(state, 2, "attack", n,
 			"attack ordered: target " + ai_log_prov_label(state, potential_targets[i].location)
 			+ " assembly " + ai_log_prov_label(state, central_province)
-			+ " force=" + std::to_string(a_force_str) + " vs_defensive=" + std::to_string(target_attack_force)
+			+ " attackers=" + std::to_string(attack_armies.size())
+			+ " weight=" + std::to_string(attack_weight)
+			+ " vs_defensive=" + std::to_string(target_attack_force)
 			+ " remaining_attacks=" + std::to_string(max_attacks_to_make - 1));
 		--max_attacks_to_make;
 
