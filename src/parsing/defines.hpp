@@ -684,7 +684,9 @@
 /* Weight multiplier applied at a marching army's destination, so the AI reacts to a redeployment in progress */                   \
 	LUA_DEFINES_LIST_ELEMENT(alice_ai_pressure_destination_weight, 0.500000)                                                       \
 /* Friendly weight a sector must retain, relative to hostile pressure, for a garrison to be free to leave */                       \
-	LUA_DEFINES_LIST_ELEMENT(alice_ai_hold_ratio, 0.750000)                                                                        \
+		LUA_DEFINES_LIST_ELEMENT(alice_ai_hold_ratio, 0.750000)                                                                        \
+/* How far past the local hostile pressure a province's garrison must weigh before it stops pulling more guards */                  \
+		LUA_DEFINES_LIST_ELEMENT(alice_ai_guard_sufficiency, 1.500000)                                                                \
 /* How far reinforcements may push a battle province past its supply limit. 1.0 forbids overstacking outright; raise it */         \
 /* to let the AI accept attrition to win a battle it would otherwise be unable to feed reinforcements into. */                     \
 		LUA_DEFINES_LIST_ELEMENT(alice_ai_battle_supply_tolerance, 1.000000)                                                           \

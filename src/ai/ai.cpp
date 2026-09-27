@@ -1568,6 +1568,13 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 	// distribute target provinces
 	uint32_t end_of_stage = 0;
 
+	// Per-province weight already handed out this pass, so a province stops
+	// pulling guards once it covers the local threat. See the check in the
+	// stage loop below for why this exists.
+	std::vector<float> assigned_guard_weight(provinces.size(), 0.0f);
+	float const guard_sufficiency = std::max(0.0f, state.defines.alice_ai_guard_sufficiency);
+	float const token_garrison = std::max(0.0f, state.defines.alice_ai_token_pressure);
+
 	for(uint8_t stage = uint8_t(province_class::count); stage-- > 0 && !guards_list.empty(); ) {
 		uint32_t start_of_stage = end_of_stage;
 
@@ -1585,6 +1592,22 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 				auto p_region = state.world.province_get_connected_region_id(provinces[j].id);
 				assert(p_region > 0);
 				bool p_region_is_coastal = state.province_definitions.connected_region_is_coastal[p_region - 1];
+
+				/*
+				A province stops pulling guards once the weight stationed on it covers
+				the local threat: hostile pressure times the sufficiency margin, with a
+				token garrison as the floor so a quiet stretch of the same tier still
+				keeps something on the border. Without this the tier ladder drains the
+				entire guard pool into whichever high-tier province has the fattest
+				attrition limit -- most of the army camping on Montenegro while the
+				real front goes unmanned. The cap is threat-proportional, not
+				supply-limit-based, so the capacity objection documented above does
+				not apply to it.
+				*/
+				float const hostile_here = use_pressure ? guard_field.hostile_at(p) : 0.0f;
+				float const needed_here = std::max(hostile_here * guard_sufficiency, token_garrison);
+				if(assigned_guard_weight[j] >= needed_here)
+					continue;
 
 				if(10.0f * (1 + full_loops_through) <= military::peacetime_attrition_limit(state, n, p)) {
 					uint32_t nearest_index = 0;
@@ -1638,6 +1661,7 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 					// assign nearest guard
 					if(nearest) {
 						state.world.army_set_ai_province(nearest, p);
+						assigned_guard_weight[j] += ai::army_pressure_weight(state, nearest);
 						guards_list[nearest_index] = guards_list.back();
 						guards_list.pop_back();
 
