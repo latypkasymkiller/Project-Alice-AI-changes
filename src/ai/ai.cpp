@@ -768,7 +768,18 @@ void validate_ai_orders(sys::state& state) {
 			if(!cancelled && (activity == army_activity::attacking || activity == army_activity::attack_gathered)) {
 				auto dest = ar.get_ai_province();
 				if(dest) {
+					/*
+					The fight at the destination is joined by every friendly force that is
+					already there or heading there -- not just by the armies that happen to
+					carry this destination on them. A big friendly stack standing in the
+					province (its own orders long consumed, ai_province cleared) used to be
+					invisible here, so a reinforcement coming to help it was called a losing
+					meeting engagement against a slightly larger enemy and turned away.
+					Only this nation's own armies are released on a lost projection; allies
+					and subjects are counted in the battle but never ordered around.
+					*/
 					std::vector<dcon::army_id> headed_armies;
+					std::vector<dcon::army_id> allied_support;
 					std::vector<dcon::army_id> meeting_defenders;
 					for(auto other : state.world.in_army) {
 						if(other.get_battle_from_army_battle_participation() || other.get_navy_from_army_transport()
@@ -776,15 +787,23 @@ void validate_ai_orders(sys::state& state) {
 							continue;
 						auto other_ctrl = other.get_controller_from_army_control();
 						auto other_dest = other.get_ai_province();
-						if(other_ctrl == controller && other_dest == dest) {
-							headed_armies.push_back(other.id);
-						} else if(other_ctrl && military::are_at_war(state, controller, other_ctrl)) {
-							auto other_loc = other.get_location_from_army_location().id;
-							if(other_loc == dest || (other.get_arrival_time() && other_dest == dest))
+						auto other_loc = other.get_location_from_army_location().id;
+						bool at_dest = other_loc == dest || (other.get_arrival_time() && other_dest == dest);
+						if(other_ctrl == controller) {
+							if(other_dest == dest || other_loc == dest)
+								headed_armies.push_back(other.id);
+						} else if(other_ctrl && military::are_allied_in_war(state, controller, other_ctrl)) {
+							if(at_dest)
+								allied_support.push_back(other.id);
+						} else if(!other_ctrl || military::are_at_war(state, controller, other_ctrl)) {
+							if(at_dest)
 								meeting_defenders.push_back(other.id);
 						}
 					}
-					float meet_prob = estimate_win_probability(state, headed_armies, meeting_defenders);
+					std::vector<dcon::army_id> meeting_fighters;
+					meeting_fighters.insert(meeting_fighters.end(), headed_armies.begin(), headed_armies.end());
+					meeting_fighters.insert(meeting_fighters.end(), allied_support.begin(), allied_support.end());
+					float meet_prob = estimate_win_probability(state, meeting_fighters, meeting_defenders);
 					if(meet_prob < state.defines.alice_ai_min_attack_win_prob) {
 						AI_LOG_N(state, 3, "cleanup", controller,
 							"cancel march into meeting engagement: army#" + std::to_string(ar.id.index())
