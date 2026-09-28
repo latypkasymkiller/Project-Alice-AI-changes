@@ -1,0 +1,13 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "x64-fastdebug-windows",
+      "displayName": "x64 Fast Debug (optimized, runs fast)",
+      "inherits": "x64-debug-windows",
+      "cacheVariables": {
+        "ALICE_FAST_DEBUG": "ON"
+      }
+    }
+  ]
+}

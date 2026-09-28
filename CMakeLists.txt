@@ -397,7 +397,7 @@ if(WIN32)
 			message(STATUS "Normal, not PGO, build")
 			target_compile_options(AliceCommon INTERFACE
 				  ${CommonMSVCFlags} /Z7
-				  $<$<CONFIG:Debug>: /EHsc /MTd /RTC1 /Od>
+				  $<$<CONFIG:Debug>: /EHsc /MTd $<IF:$<BOOL:${ALICE_FAST_DEBUG}>,/O1,/RTC1 /Od>>
 # for faster debug builds, replace /RTC1 /Od with /O1 -- should be able to use /Ox, but for some reason that crashes ZSTD
 				  $<$<NOT:$<CONFIG:Debug>>: 	/DNDEBUG /wd4530 /MT /O2 /Oi /GL /sdl- /GS- /Gy /Gw /Zc:inline>)
 			target_link_options(AliceCommon INTERFACE
