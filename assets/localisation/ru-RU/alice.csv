@@ -2089,7 +2089,7 @@ current_stockpile_count_tooltip;На складах: ?Y$val$?W
 stockpile_target_tooltip;Цель по запасам: ?Y$val$?W
 stockpile_change;$val$/день
 stockpile_change_tooltip;Суточное изменение запасов: ?Y$val$?W
-stockpile_days_left;Осталось дней: $days$
+stockpile_days_left;?Y$days$?W дн.
 stockpile_days_left_tooltip;При текущем уровне расхода запасов хватит примерно на ?Y$days$?W дней
 mlitary_stockpile_commodity_tooltip;?GЛевая кнопка мыши?W — выбрать товар, ?Rправая кнопка мыши?W — снять выбор
 mlitary_stockpile_target_error;?RНеверный ввод?W

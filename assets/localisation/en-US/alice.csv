@@ -2086,7 +2086,7 @@ current_stockpile_count_tooltip;In stockpiles: ?Y$val$?W
 stockpile_target_tooltip;Stockpiles target: ?Y$val$?W
 stockpile_change;$val$/day
 stockpile_change_tooltip;Daily Stockpile Change: ?Y$val$?W
-stockpile_days_left;$days$ days left
+stockpile_days_left;?Y$days$?W days
 stockpile_days_left_tooltip;Estimated ?Y$days$?W days worth of supplies left at current consumption levels
 mlitary_stockpile_commodity_tooltip;?GLeft-click?W to select commodity, ?Rright-click?W to deselect
 mlitary_stockpile_target_error;?RInvalid input?W
