@@ -753,6 +753,54 @@ void validate_ai_orders(sys::state& state) {
 					}
 				}
 			}
+
+			/*
+			The attack-march analog of the guard check above. assign_targets weighed the
+			target when the order was issued, but an occupation march is not re-weighed
+			once it is under way: an enemy field army that starts marching into the same
+			province turns the occupation into a meeting engagement that an occupier,
+			with org worn down by the march, may well lose. Re-run the battle model over
+			the destination daily; if it now says the arriving group loses, release the
+			whole group. Every army of the nation heading to the same destination
+			evaluates identical numbers, so a group assault cancels as one and never
+			splits mid-march.
+			*/
+			if(!cancelled && (activity == army_activity::attacking || activity == army_activity::attack_gathered)) {
+				auto dest = ar.get_ai_province();
+				if(dest) {
+					std::vector<dcon::army_id> headed_armies;
+					std::vector<dcon::army_id> meeting_defenders;
+					for(auto other : state.world.in_army) {
+						if(other.get_battle_from_army_battle_participation() || other.get_navy_from_army_transport()
+							|| other.get_black_flag() || other.get_is_retreating())
+							continue;
+						auto other_ctrl = other.get_controller_from_army_control();
+						auto other_dest = other.get_ai_province();
+						if(other_ctrl == controller && other_dest == dest) {
+							headed_armies.push_back(other.id);
+						} else if(other_ctrl && military::are_at_war(state, controller, other_ctrl)) {
+							auto other_loc = other.get_location_from_army_location().id;
+							if(other_loc == dest || (other.get_arrival_time() && other_dest == dest))
+								meeting_defenders.push_back(other.id);
+						}
+					}
+					float meet_prob = estimate_win_probability(state, headed_armies, meeting_defenders);
+					if(meet_prob < state.defines.alice_ai_min_attack_win_prob) {
+						AI_LOG_N(state, 3, "cleanup", controller,
+							"cancel march into meeting engagement: army#" + std::to_string(ar.id.index())
+							+ " dest " + ai_log_prov_label(state, dest)
+							+ " headed=" + std::to_string(headed_armies.size())
+							+ " defenders=" + std::to_string(meeting_defenders.size())
+							+ " win_prob=" + std::to_string(meet_prob));
+						for(auto hid : headed_armies) {
+							military::stop_army_movement(state, hid);
+							state.world.army_set_ai_activity(hid, uint8_t(army_activity::on_guard));
+							state.world.army_set_ai_province(hid, dcon::province_id{});
+						}
+						cancelled = true;
+					}
+				}
+			}
 		}
 
 		/*
@@ -1653,6 +1701,86 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 			++full_loops_through;
 		} while(guard_assigned);
 
+	}
+
+	/*
+	Leftover guards: on_guard armies that no echelon claimed this pass. The
+	scenario's starting positions (Laghwat 1836) and armies left behind by a
+	finished occupation both end up here, and a province whose supply limit is
+	too low can never pull a replacement. An unassigned army bleeding out in
+	such a province is the worst of both worlds: it defends nothing and
+	dissolves where it stands. Two-way fix:
+	 - if the province can still feed part of the army, split off only the
+	   excess and send it to the controlled province with the most spare
+	   supply; the remainder stops taking attrition and keeps a presence in
+	   the region;
+	 - otherwise move the whole army there.
+	Spare capacity is raw supply limit minus the weight already standing in the
+	province, so an already-garrisoned province does not become a new trap. If
+	no controlled province feeds the army better than where it stands, the log
+	records that. A split is re-evaluated on every pass, so if the estimate was
+	optimistic the next pass sheds more.
+	*/
+	float const evac_reg_weight = float(state.defines.pop_size_per_regiment) / 1000.0f;
+	for(auto a : guards_list) {
+		if(!military::will_recieve_attrition(state, a))
+			continue; // sustainable where it stands -- leave the reserve in place
+
+		auto loc = state.world.army_get_location_from_army_location(a);
+
+		dcon::province_id best;
+		float best_spare = 0.0f;
+		for(auto c : state.world.nation_get_province_control(n)) {
+			auto p = c.get_province().id;
+			float spare = float(military::supply_limit_in_province(state, n, p)) * evac_reg_weight
+				- military::local_army_weight(state, p);
+			if(p != loc && spare > best_spare) {
+				best_spare = spare;
+				best = p;
+			}
+		}
+
+		// weight that must leave the province so what remains fits the supply limit
+		float excess_needed = military::local_army_weight(state, loc)
+			- float(military::supply_limit_in_province(state, n, loc)) * evac_reg_weight;
+
+		float army_weight = 0.0f;
+		for(auto rg : state.world.army_get_army_membership(a))
+			army_weight += evac_reg_weight * rg.get_regiment().get_strength();
+
+		if(!best || excess_needed >= army_weight - evac_reg_weight * 0.5f) {
+			// the province feeds nothing, or there is nowhere better to go: move whole
+			if(best) {
+				AI_LOG_N(state, 3, "defense", n,
+					"evacuate army#" + std::to_string(a.index())
+					+ " from " + ai_log_prov_label(state, loc)
+					+ " (taking attrition) to " + ai_log_prov_label(state, best));
+				state.world.army_set_ai_province(a, best);
+			} else {
+				AI_LOG_N(state, 3, "defense", n,
+					"evacuate army#" + std::to_string(a.index())
+					+ " from " + ai_log_prov_label(state, loc)
+					+ " skipped: no controlled province feeds it better");
+			}
+		} else {
+			auto excess_army = split_army_for_weight(state, n, a, excess_needed);
+			if(excess_army != a) {
+				AI_LOG_N(state, 3, "defense", n,
+					"evacuate excess army#" + std::to_string(excess_army.index())
+					+ " split from army#" + std::to_string(a.index())
+					+ " at " + ai_log_prov_label(state, loc)
+					+ " to " + ai_log_prov_label(state, best)
+					+ "; remainder holds the province");
+				state.world.army_set_ai_province(excess_army, best);
+			} else {
+				// split refused (too small / invalid): fall back to moving whole
+				AI_LOG_N(state, 3, "defense", n,
+					"evacuate army#" + std::to_string(a.index())
+					+ " from " + ai_log_prov_label(state, loc)
+					+ " (taking attrition, split refused) to " + ai_log_prov_label(state, best));
+				state.world.army_set_ai_province(a, best);
+			}
+		}
 	}
 
 	// Post-assignment summary: which stations collected how many guards. This is
@@ -2801,6 +2929,7 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 
 		// make list of attackers
 		float a_force_str = 0.f;
+		std::vector<dcon::army_id> extracted_armies;
 		float committed_assault_weight = 0.0f;
 		bool reserve_limit_hit = false;
 		int32_t k = int32_t(ready_armies.size());
@@ -2870,6 +2999,7 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 					extracted_weight += army_w;
 					extracted_real_weight += ai::army_pressure_weight(state, ar.get_army().id);
 					ready_armies[k].str += estimate_army_offensive_strength(state, ar.get_army());
+					extracted_armies.push_back(ar.get_army().id);
 				}
 				ready_armies[k].weight = extracted_real_weight;
 				ready_armies[k].str += 0.00001f;
@@ -2882,10 +3012,39 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 			}
 		}
 
-		if(a_force_str < target_attack_force) {
+		/*
+		Two ways through. The raw-superiority test is the historical gate: it is
+		blind to unit quality and to what the battle model actually says, so a war
+		can stall forever on an inflated estimate (Algeria 1839: need=648 from
+		threat-radius counting vs have=135, while the player wins the very battle
+		the gate forbids). estimate_win_probability runs the combat math over the
+		armies that would actually fight, so a favourable-but-outnumbered assault,
+		and every unoccupied enemy province, goes through when it should.
+		*/
+		std::vector<dcon::army_id> target_defenders;
+		for(auto ar : state.world.province_get_army_location(potential_targets[i].location)) {
+			auto def_ctrl = ar.get_army().get_controller_from_army_control();
+			if(!def_ctrl || military::are_at_war(state, n, def_ctrl))
+				target_defenders.push_back(ar.get_army().id);
+		}
+		// Enemy armies already marching into the target are definite defenders: they
+		// will be there when the assault arrives, unlike armies merely standing nearby.
+		for(auto padj : dcon::fatten(state.world, potential_targets[i].location).get_province_adjacency()) {
+			auto other = padj.get_connected_provinces(0) == potential_targets[i].location
+				? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
+			for(auto mar : state.world.province_get_army_location(other.id)) {
+				auto march_ctrl = mar.get_army().get_controller_from_army_control();
+				if(mar.get_army().get_arrival_time() && mar.get_army().get_ai_province() == potential_targets[i].location
+					&& (!march_ctrl || military::are_at_war(state, n, march_ctrl)))
+					target_defenders.push_back(mar.get_army().id);
+			}
+		}
+		float target_win_prob = estimate_win_probability(state, extracted_armies, target_defenders);
+		if(a_force_str < target_attack_force && target_win_prob < state.defines.alice_ai_min_attack_win_prob) {
 			AI_LOG_N(state, 3, "attack", n,
 				"skip target too strong: " + ai_log_prov_label(state, potential_targets[i].location)
 				+ " have=" + std::to_string(a_force_str) + " need=" + std::to_string(target_attack_force)
+				+ " win_prob=" + std::to_string(target_win_prob)
 				+ " reserve_hit=" + std::to_string(reserve_limit_hit ? 1 : 0));
 			continue; // Target is too strong for remaining available forces, skip and check others
 		}
