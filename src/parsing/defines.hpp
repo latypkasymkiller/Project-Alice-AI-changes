@@ -712,6 +712,8 @@
 	LUA_DEFINES_LIST_ELEMENT(alice_ai_offensive_strength_overestimate, 1.000000) \
 /* Minimum estimate_win_probability for an AI assault when the raw superiority test fails (0.5 = even odds) */ \
 	LUA_DEFINES_LIST_ELEMENT(alice_ai_min_attack_win_prob, 0.500000) \
+/* Minimum province supply limit (in thousands of men, same unit the province tooltip shows) for the AI to order an occupation into it; below this the vacate-retake loop is not worth the armies */ \
+	LUA_DEFINES_LIST_ELEMENT(alice_ai_min_occupation_supply, 3.000000) \
 	LUA_DEFINES_LIST_ELEMENT(alice_military_score_leadership_factor, 1.000000) \
 	LUA_DEFINES_LIST_ELEMENT(alice_lf_needs_scale, 1.000000) \
 	LUA_DEFINES_LIST_ELEMENT(alice_ev_needs_scale, 1.000000) \

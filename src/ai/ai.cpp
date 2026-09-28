@@ -1715,7 +1715,9 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 	   supply; the remainder stops taking attrition and keeps a presence in
 	   the region;
 	 - otherwise move the whole army there.
-	Spare capacity is raw supply limit minus the weight already standing in the
+	Units: supply_limit_in_province and local_army_weight are both in thousands
+	of men (Gafsa shows "Supply limit: 12" for 12K), so they subtract directly.
+	Spare capacity is the raw limit minus the weight already standing in the
 	province, so an already-garrisoned province does not become a new trap. If
 	no controlled province feeds the army better than where it stands, the log
 	records that. A split is re-evaluated on every pass, so if the estimate was
@@ -1732,7 +1734,7 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 		float best_spare = 0.0f;
 		for(auto c : state.world.nation_get_province_control(n)) {
 			auto p = c.get_province().id;
-			float spare = float(military::supply_limit_in_province(state, n, p)) * evac_reg_weight
+			float spare = float(military::supply_limit_in_province(state, n, p))
 				- military::local_army_weight(state, p);
 			if(p != loc && spare > best_spare) {
 				best_spare = spare;
@@ -1742,11 +1744,14 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 
 		// weight that must leave the province so what remains fits the supply limit
 		float excess_needed = military::local_army_weight(state, loc)
-			- float(military::supply_limit_in_province(state, n, loc)) * evac_reg_weight;
+			- float(military::supply_limit_in_province(state, n, loc));
 
 		float army_weight = 0.0f;
 		for(auto rg : state.world.army_get_army_membership(a))
 			army_weight += evac_reg_weight * rg.get_regiment().get_strength();
+
+		if(best && state.world.army_get_ai_province(a) == best)
+			continue; // already marching to the evacuation destination -- no new order, no log spam
 
 		if(!best || excess_needed >= army_weight - evac_reg_weight * 0.5f) {
 			// the province feeds nothing, or there is nowhere better to go: move whole
@@ -2914,6 +2919,23 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 			break;
 		}
 
+		/*
+		An occupation we cannot sustain re-creates the vacate-retake loop: the
+		evacuation pass pulls the army out of a province that cannot feed it, the
+		enemy walks back in, and the attack pass marches the army right back.
+		Evacuation now splits armies to fit, so this only bites provinces that
+		cannot feed even a single regiment; the define is that minimum, in
+		thousands of men (the same unit the province tooltip shows).
+		*/
+		float target_supply_limit = float(military::supply_limit_in_province(state, n, potential_targets[i].location));
+		if(target_supply_limit < state.defines.alice_ai_min_occupation_supply) {
+			AI_LOG_N(state, 3, "attack", n,
+				"skip unsuppliable occupation: " + ai_log_prov_label(state, potential_targets[i].location)
+				+ " supply=" + std::to_string(target_supply_limit)
+				+ " min=" + std::to_string(state.defines.alice_ai_min_occupation_supply));
+			continue;
+		}
+
 		if(potential_targets[i].strength_estimate == 0.0f)
 			potential_targets[i].strength_estimate = estimate_enemy_defensive_force(state, potential_targets[i].location, n) + 0.00001f;
 
@@ -3041,11 +3063,20 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		}
 		float target_win_prob = estimate_win_probability(state, extracted_armies, target_defenders);
 		if(a_force_str < target_attack_force && target_win_prob < state.defines.alice_ai_min_attack_win_prob) {
-			AI_LOG_N(state, 3, "attack", n,
-				"skip target too strong: " + ai_log_prov_label(state, potential_targets[i].location)
-				+ " have=" + std::to_string(a_force_str) + " need=" + std::to_string(target_attack_force)
-				+ " win_prob=" + std::to_string(target_win_prob)
-				+ " reserve_hit=" + std::to_string(reserve_limit_hit ? 1 : 0));
+			if(extracted_armies.empty()) {
+				// The pool was drained by an earlier target in this pass; without this the
+				// log reads "win_prob=0.000000", which is an artifact, not a verdict.
+				AI_LOG_N(state, 3, "attack", n,
+					"skip target: no forces left in pool for " + ai_log_prov_label(state, potential_targets[i].location)
+					+ " need=" + std::to_string(target_attack_force)
+					+ " reserve_hit=" + std::to_string(reserve_limit_hit ? 1 : 0));
+			} else {
+				AI_LOG_N(state, 3, "attack", n,
+					"skip target too strong: " + ai_log_prov_label(state, potential_targets[i].location)
+					+ " have=" + std::to_string(a_force_str) + " need=" + std::to_string(target_attack_force)
+					+ " win_prob=" + std::to_string(target_win_prob)
+					+ " reserve_hit=" + std::to_string(reserve_limit_hit ? 1 : 0));
+			}
 			continue; // Target is too strong for remaining available forces, skip and check others
 		}
 
