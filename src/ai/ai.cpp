@@ -1730,7 +1730,7 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 	such a province is the worst of both worlds: it defends nothing and
 	dissolves where it stands. Two-way fix:
 	 - if the province can still feed part of the army, split off only the
-	   excess and send it to the controlled province with the most spare
+	   excess and send it to the nearest controlled province with spare
 	   supply; the remainder stops taking attrition and keeps a presence in
 	   the region;
 	 - otherwise move the whole army there.
@@ -1777,13 +1777,16 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 			army_weight += evac_reg_weight * rg.get_regiment().get_strength();
 
 		dcon::province_id best;
-		float best_spare = 0.0f;
+		float best_distance = 0.0f;
 		for(auto c : state.world.nation_get_province_control(n)) {
 			auto p = c.get_province().id;
 			float spare = float(military::supply_limit_in_province(state, n, p))
 				- military::local_army_weight(state, p);
-			if(p != loc && spare > best_spare) {
-				best_spare = spare;
+			if(p == loc || spare <= 0.0f)
+				continue; // no spare supply there, or it is where we already stand
+			// nearest province that can actually feed the piece keeps it close to the front
+			if(auto d = province::sorting_distance(state, loc, p); !best || d < best_distance) {
+				best_distance = d;
 				best = p;
 			}
 		}
