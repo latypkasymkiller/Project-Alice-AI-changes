@@ -1652,7 +1652,15 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 				not apply to it.
 				*/
 				float const hostile_here = use_pressure ? guard_field.hostile_at(p) : 0.0f;
-				float const needed_here = std::max(hostile_here * guard_sufficiency, token_garrison);
+				float needed_here = std::max(hostile_here * guard_sufficiency, token_garrison);
+				/*
+				At war, a province with zero hostile pressure does not drain the guard
+				pool: the token-garrison floor is a peacetime coverage mechanism, and
+				applying it in wartime sent garrisons marching across the country to
+				threatless rear provinces (Tlemcen 1837) while the frontline held.
+				*/
+				if(use_pressure && state.world.nation_get_is_at_war(n) && hostile_here <= 0.0f)
+					needed_here = 0.0f;
 				if(assigned_guard_weight[j] >= needed_here)
 					continue;
 
