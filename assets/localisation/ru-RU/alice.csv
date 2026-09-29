@@ -2161,3 +2161,6 @@ logistics_supply_throughput_label;Пропускная способность:
 logistics_satisfaction_tooltip;Средний процент удовлетворения потребных товаров для этого раздела — ?Y$val$?W
 logistics_supply_loss_tooltip;Средний процент потерь перевозимых товаров в этом разделе — ?Y$val$?W
 logistics_supply_throughput_tooltip;Пропускная способность перевозимых товаров в этом разделе — ?Y$val$?W
+alice_budget_military_expense;Военные расходы
+alice_budget_education_expense;Образование
+alice_budget_administration_expense;Администрирование
