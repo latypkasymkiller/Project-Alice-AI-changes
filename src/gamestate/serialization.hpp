@@ -201,8 +201,8 @@ inline uint8_t const* deserialize(uint8_t const* ptr_in, ankerl::unordered_dense
 // (alice_ai_march_supply_floor was removed) -- the struct is memcpy'd whole, so its layout
 // changed. The upstream consumption-category merge also added save-tagged schema properties
 // (local_consumption_weights, demand/cost/satisfied_demand per consumption_category). Both
-// changes make pre-48 .bin files read at the wrong offsets rather than being rejected.
-constexpr inline uint32_t save_file_version = 48;
+// changes make pre-49 .bin files read at the wrong offsets rather than being rejected.
+constexpr inline uint32_t save_file_version = 49;
 constexpr inline uint32_t scenario_file_version = 139 + save_file_version;
 
 struct scenario_header {

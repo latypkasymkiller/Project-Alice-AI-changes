@@ -68,7 +68,7 @@ public:
 	void button_action(sys::state& state, province_tile target, ui::element_base* parent) noexcept override { }
 
 	void update_tooltip(sys::state& state, int32_t x, int32_t y, text::columnar_layout& contents, province_tile target) noexcept override {
-		
+
 	}
 };
 
@@ -300,7 +300,7 @@ public:
 class province_build_new_tile : public tile_type_logic {
 public:
 	dcon::text_key get_name(sys::state& state, province_tile target) noexcept override {
-		return state.lookup_key("new");
+		return state.lookup_key("build_factory");
 	}
 
 	bool is_available(sys::state& state, province_tile target) noexcept override {
@@ -316,14 +316,14 @@ public:
 	}
 
 	void update_tooltip(sys::state& state, int32_t x, int32_t y, text::columnar_layout& contents, province_tile target) noexcept override {
-		text::add_line(state, contents, state.lookup_key("new"));
+		text::add_line(state, contents, state.lookup_key("build_factory"));
 	}
 };
 
 class factory_construction_tile : public tile_type_logic {
 public:
 	dcon::text_key get_name(sys::state& state, province_tile target) noexcept override {
-		return state.lookup_key("new");
+		return state.lookup_key("build_factory");
 	}
 
 	bool is_available(sys::state& state, province_tile target) noexcept override {
@@ -484,9 +484,9 @@ public:
 
 		// propagate control better for state capitals via market connections
 		state.world.for_each_trade_route([&](dcon::trade_route_id trid) {
-			auto distance = state.world.trade_route_get_distance(trid);
-			auto A_market = state.world.trade_route_get_connected_markets(trid, 0);
-			auto B_market = state.world.trade_route_get_connected_markets(trid, 1);
+			auto distance = state.world.trade_route_get_distance_km(trid);
+			auto A_market = state.world.trade_route_get_origin(trid);
+			auto B_market = state.world.trade_route_get_target(trid);
 			auto A_state_instance = state.world.market_get_zone_from_local_market(A_market);
 			auto B_state_instance = state.world.market_get_zone_from_local_market(B_market);
 			auto A_owner = state.world.state_instance_get_nation_from_state_ownership(A_state_instance);
@@ -761,21 +761,21 @@ public:
 
 		// TODO: Organize abstract "explain market labour demand" for the two
 		// US3AC2
-		auto external_trade_employment = economy::transportation_between_markets_labor_demand(state, target.market);
+		//auto external_trade_employment = economy::transportation_between_markets_labor_demand(state, target.market);
 		// US3AC3
 		// Since the tile is rendered only for state capitals, we assume that target.province = market capital
-		auto internal_trade_employment = economy::transportation_inside_market_labor_demand(state, target.market, target.province);
-		auto target_employment = external_trade_employment + internal_trade_employment;
+		//auto internal_trade_employment = economy::transportation_inside_market_labor_demand(state, target.market, target.province);
+		//auto target_employment = external_trade_employment + internal_trade_employment;
 
-		auto satisfaction = state.world.province_get_labor_demand_satisfaction(target.province, economy::labor::no_education);
-		auto employment = target_employment * satisfaction;
-		text::add_line(state, contents, "trade_center_employment", text::variable_type::value, text::fp_one_place{ employment });
-		text::add_line(state, contents, labour_type_to_employment_type_text_key(economy::labor::no_education), 15);
-		text::add_line(state, contents, "target_employment", text::variable_type::value, text::fp_one_place{ target_employment }, 15);
-		text::add_line(state, contents, "employment_satisfaction", text::variable_type::value, text::fp_percentage{ satisfaction }, 15);
+		//auto satisfaction = state.world.province_get_labor_demand_satisfaction(target.province, economy::labor::no_education);
+		//auto employment = target_employment * satisfaction;
+		//text::add_line(state, contents, "trade_center_employment", text::variable_type::value, text::fp_one_place{ employment });
+		//text::add_line(state, contents, labour_type_to_employment_type_text_key(economy::labor::no_education), 15);
+		//text::add_line(state, contents, "target_employment", text::variable_type::value, text::fp_one_place{ target_employment }, 15);
+		//text::add_line(state, contents, "employment_satisfaction", text::variable_type::value, text::fp_percentage{ satisfaction }, 15);
 
-		auto wage = state.world.province_get_labor_price(target.province, economy::labor::no_education);
-		text::add_line(state, contents, "wage", text::variable_type::value, text::fp_one_place{ wage }, 15);
+		//auto wage = state.world.province_get_labor_price(target.province, economy::labor::no_education);
+		//text::add_line(state, contents, "wage", text::variable_type::value, text::fp_one_place{ wage }, 15);
 	}
 };
 
@@ -832,6 +832,7 @@ public:
 		text::add_line(state, contents, "province_market_consumption", text::variable_type::val, text::fp_two_places{ std::max(0.f, state.world.market_get_demand(market, target.commodity) - economy::trade_demand(state, market, target.commodity)) });
 		text::add_line(state, contents, "province_market_stockpiles", text::variable_type::val, text::fp_two_places{ state.world.market_get_stockpile(market, target.commodity) });
 		text::add_line(state, contents, "province_market_government_stockpiles", text::variable_type::val, text::fp_two_places{ state.world.market_get_government_stockpile(market, target.commodity) });
+		text::add_line(state, contents, "province_market_stockpiles_sales", text::variable_type::val, text::fp_two_places{ state.world.market_get_stockpile_sales(market, target.commodity) });
 		{
 			auto supply = state.world.market_get_supply(market, target.commodity);
 			auto demand = state.world.market_get_demand(market, target.commodity);
