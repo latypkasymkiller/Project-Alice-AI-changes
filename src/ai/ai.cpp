@@ -1751,16 +1751,20 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 
 		/*
 		How much weight must leave this province: everything standing in it minus
-		its supply limit, minus the weight already marching out -- those armies
-		have stopped competing for the supply and will cross the border within
-		days. Both quantities are in thousands of men (the unit the province
-		tooltip shows), and the attrition formula itself is
+		its supply limit, minus the weight already ordered out -- those armies
+		carry a destination stamp, have stopped competing for the supply and will
+		cross the border within days. Both quantities are in thousands of men (the
+		unit the province tooltip shows), and the attrition formula itself is
 		clamp((weight - supply_limit) * mods, 0, max_attrition) * 0.01.
 		*/
 		float leaving = 0.0f;
 		for(auto al : state.world.province_get_army_location(loc)) {
 			auto other_army = al.get_army();
-			if(other_army.get_arrival_time() && other_army.get_ai_province() != loc) {
+			auto other_dest = other_army.get_ai_province();
+			// ai_province is stamped the moment an army is given a destination --
+			// waiting for arrival_time here re-reads the departure as fresh overflow
+			// for as long as the march order takes to issue, and the cascade returns.
+			if(other_dest && other_dest != loc) {
 				for(auto rg : other_army.get_army_membership())
 					leaving += evac_reg_weight * rg.get_regiment().get_strength();
 			}
