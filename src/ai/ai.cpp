@@ -1749,6 +1749,33 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 
 		auto loc = state.world.army_get_location_from_army_location(a);
 
+		/*
+		How much weight must leave this province: everything standing in it minus
+		its supply limit, minus the weight already marching out -- those armies
+		have stopped competing for the supply and will cross the border within
+		days. Both quantities are in thousands of men (the unit the province
+		tooltip shows), and the attrition formula itself is
+		clamp((weight - supply_limit) * mods, 0, max_attrition) * 0.01.
+		*/
+		float leaving = 0.0f;
+		for(auto al : state.world.province_get_army_location(loc)) {
+			auto other_army = al.get_army();
+			if(other_army.get_arrival_time() && other_army.get_ai_province() != loc) {
+				for(auto rg : other_army.get_army_membership())
+					leaving += evac_reg_weight * rg.get_regiment().get_strength();
+			}
+		}
+
+		float overflow = military::local_army_weight(state, loc)
+			- float(military::supply_limit_in_province(state, n, loc))
+			- leaving;
+		if(overflow <= 0.0f)
+			continue; // the overflow belongs to departing armies -- what stays fits
+
+		float army_weight = 0.0f;
+		for(auto rg : state.world.army_get_army_membership(a))
+			army_weight += evac_reg_weight * rg.get_regiment().get_strength();
+
 		dcon::province_id best;
 		float best_spare = 0.0f;
 		for(auto c : state.world.nation_get_province_control(n)) {
@@ -1761,16 +1788,9 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 			}
 		}
 
-		// weight that must leave the province so what remains fits the supply limit
-		float excess_needed = military::local_army_weight(state, loc)
-			- float(military::supply_limit_in_province(state, n, loc));
-
-		float army_weight = 0.0f;
-		for(auto rg : state.world.army_get_army_membership(a))
-			army_weight += evac_reg_weight * rg.get_regiment().get_strength();
-
-		if(best && state.world.army_get_ai_province(a) == best)
-			continue; // already marching to the evacuation destination -- no new order, no log spam
+		// this army's share of the overflow; the split rounds to whole regiments,
+		// whatever residue that leaves is carried out by the piece itself
+		float excess_needed = std::min(overflow, army_weight);
 
 		if(!best || excess_needed >= army_weight - evac_reg_weight * 0.5f) {
 			// the province feeds nothing, or there is nowhere better to go: move whole
