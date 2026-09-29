@@ -3020,31 +3020,52 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 					float const army_w = use_pressure ? ai::army_pressure_weight(state, ar.get_army().id) : 0.0f;
 
 					if(use_pressure) {
-						bool is_frontline = false;
+						bool enemy_army_adjacent = false;
 						for(auto padj : loc_fat.get_province_adjacency()) {
 							auto other = padj.get_connected_provinces(0) == loc_fat ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
-							if(other.id != potential_targets[i].location) {
-								auto n_controller = other.get_nation_from_province_control();
-								if(other.get_rebel_faction_from_province_rebel_control() || (n_controller && military::are_at_war(state, n, n_controller))) {
-									is_frontline = true;
-									break;
-								}
+							if(other.id != potential_targets[i].location && military::province_has_enemy_army(state, other.id, n)) {
+								enemy_army_adjacent = true;
+								break;
 							}
 						}
 
-						if(is_frontline) {
-							float const facing = attack_field->hostile_at(loc_fat.id);
-							float const cover = attack_field->friendly_at(loc_fat.id);
+						/*
+						Legacy hard rule, restored: an actual enemy stack next door holds
+						this sector no matter what the pressure arithmetic says. The
+						token-pressure/cover-ratio escape used to release armies standing
+						right next to the enemy field force (Gafsa 1840: facing ~= 3 ==
+						token_pressure -> "overwhelmed" -> the whole base stripped for
+						raids while the enemy walked back in).
+						*/
+						if(enemy_army_adjacent) {
+							should_hold_frontline = true;
+						} else {
+							bool is_frontline = false;
+							for(auto padj : loc_fat.get_province_adjacency()) {
+								auto other = padj.get_connected_provinces(0) == loc_fat ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
+								if(other.id != potential_targets[i].location) {
+									auto n_controller = other.get_nation_from_province_control();
+									if(other.get_rebel_faction_from_province_rebel_control() || (n_controller && military::are_at_war(state, n, n_controller))) {
+										is_frontline = true;
+										break;
+									}
+								}
+							}
 
-							float const hold_ratio = std::max(0.0f, state.defines.alice_ai_hold_ratio);
-							float const token_pressure = std::max(0.0f, state.defines.alice_ai_token_pressure);
+							if(is_frontline) {
+								float const facing = attack_field->hostile_at(loc_fat.id);
+								float const cover = attack_field->friendly_at(loc_fat.id);
 
-							bool const overwhelm = facing <= token_pressure;
-							// Deduct extracted_weight so multiple armies in the same province don't overestimate available cover
-							bool const cover_remains = std::max(0.0f, cover - extracted_weight - army_w) >= hold_ratio * facing;
+								float const hold_ratio = std::max(0.0f, state.defines.alice_ai_hold_ratio);
+								float const token_pressure = std::max(0.0f, state.defines.alice_ai_token_pressure);
 
-							if(!overwhelm && !cover_remains) {
-								should_hold_frontline = true;
+								bool const overwhelm = facing <= token_pressure;
+								// Deduct extracted_weight so multiple armies in the same province don't overestimate available cover
+								bool const cover_remains = std::max(0.0f, cover - extracted_weight - army_w) >= hold_ratio * facing;
+
+								if(!overwhelm && !cover_remains) {
+									should_hold_frontline = true;
+								}
 							}
 						}
 					} else {
@@ -3222,30 +3243,45 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 				float const army_w = use_pressure ? ai::army_pressure_weight(state, arid) : 0.0f;
 
 				if(use_pressure) {
-					bool is_frontline = false;
+					bool enemy_army_adjacent = false;
 					for(auto padj : loc_fat.get_province_adjacency()) {
 						auto other = padj.get_connected_provinces(0) == loc_fat ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
-						if(other.id != potential_targets[i].location) {
-							auto n_controller = other.get_nation_from_province_control();
-							if(other.get_rebel_faction_from_province_rebel_control() || (n_controller && military::are_at_war(state, n, n_controller))) {
-								is_frontline = true;
-								break;
-							}
+						if(other.id != potential_targets[i].location && military::province_has_enemy_army(state, other.id, n)) {
+							enemy_army_adjacent = true;
+							break;
 						}
 					}
 
-					if(is_frontline) {
-						float const facing = attack_field->hostile_at(loc_fat.id);
-						float const cover = attack_field->friendly_at(loc_fat.id);
+					// Same legacy hard rule at command-issuance time: an enemy stack next
+					// door holds the sector regardless of the pressure arithmetic.
+					if(enemy_army_adjacent) {
+						should_hold_frontline = true;
+					} else {
+						bool is_frontline = false;
+						for(auto padj : loc_fat.get_province_adjacency()) {
+							auto other = padj.get_connected_provinces(0) == loc_fat ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
+							if(other.id != potential_targets[i].location) {
+								auto n_controller = other.get_nation_from_province_control();
+								if(other.get_rebel_faction_from_province_rebel_control() || (n_controller && military::are_at_war(state, n, n_controller))) {
+									is_frontline = true;
+									break;
+								}
+							}
+						}
 
-						float const hold_ratio = std::max(0.0f, state.defines.alice_ai_hold_ratio);
-						float const token_pressure = std::max(0.0f, state.defines.alice_ai_token_pressure);
+						if(is_frontline) {
+							float const facing = attack_field->hostile_at(loc_fat.id);
+							float const cover = attack_field->friendly_at(loc_fat.id);
 
-						bool const overwhelm = facing <= token_pressure;
-						bool const cover_remains = std::max(0.0f, cover - army_w) >= hold_ratio * facing;
+							float const hold_ratio = std::max(0.0f, state.defines.alice_ai_hold_ratio);
+							float const token_pressure = std::max(0.0f, state.defines.alice_ai_token_pressure);
 
-						if(!overwhelm && !cover_remains) {
-							should_hold_frontline = true;
+							bool const overwhelm = facing <= token_pressure;
+							bool const cover_remains = std::max(0.0f, cover - army_w) >= hold_ratio * facing;
+
+							if(!overwhelm && !cover_remains) {
+								should_hold_frontline = true;
+							}
 						}
 					}
 				} else {
