@@ -1664,7 +1664,17 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 				if(assigned_guard_weight[j] >= needed_here)
 					continue;
 
-				if(10.0f * (1 + full_loops_through) <= military::peacetime_attrition_limit(state, n, p)) {
+				/*
+				The capacity gate compares against the RAW supply limit, not
+				peacetime_attrition_limit (which divides it by 3). A garrison no heavier
+				than the raw limit takes zero attrition by the attrition formula, so the
+				/3 margin only made frontline bases with modest supply -- everything
+				below 30K, i.e. the actual war zone (Gafsa 12K) -- ungarrisonable while
+				the guard pool drained to well-fed rear provinces. The
+				10-per-full-loop ladder above still caps how many stacks a province
+				accumulates, so the anti-drain property is unchanged.
+				*/
+				if(10.0f * (1 + full_loops_through) <= float(military::supply_limit_in_province(state, n, p))) {
 					uint32_t nearest_index = 0;
 					dcon::army_id nearest;
 					float nearest_distance = 1.0f;
