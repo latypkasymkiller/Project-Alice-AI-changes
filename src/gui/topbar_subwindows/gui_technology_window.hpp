@@ -70,6 +70,7 @@ public:
 			active_modifiers_description(state, contents, state.local_player_nation, 0, sys::national_mod_offsets::flavor_tech_research_bonus, true);
 			break;
 		case culture::tech_category::unknown:
+		case culture::tech_category::total:
 			break;
 		}
 	}
@@ -213,12 +214,12 @@ public:
 		if(it == state.ui_state.tech_queue.end()) {
 			if(content != state.world.nation_get_current_research(state.local_player_nation) && !state.world.nation_get_active_technologies(state.local_player_nation, content)) { // don't add already researched or researching
 				state.ui_state.tech_queue.push_back(content);
-				parent->impl_on_update(state);
+				parent->parent->impl_on_update(state);
 			}
 		} else {
 			state.ui_state.tech_queue.erase(it);
 			state.ui_state.tech_queue.push_back(content);
-			parent->impl_on_update(state);
+			parent->parent->impl_on_update(state);
 		}
 	}
 
@@ -827,7 +828,7 @@ public:
 		// Order of category
 		// **** Order of folders within category
 		// ******** Order of appearance of technologies that have said folder?
-		std::vector<std::vector<size_t>> folders_by_category(tech_categories.size());
+		std::vector<std::vector<size_t>> folders_by_category((size_t)(culture::tech_category::total));
 		for(size_t i = 0; i < state.culture_definitions.tech_folders.size(); i++) {
 			auto const& folder = state.culture_definitions.tech_folders[i];
 			folders_by_category[static_cast<size_t>(folder.category)].push_back(i);

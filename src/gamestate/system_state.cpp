@@ -964,7 +964,16 @@ void state::render() { // called to render the frame may (and should) delay retu
 					if(command::can_start_research(*this, local_player_nation, *it)) {
 						// can research, so research it
 						command::start_research(*this, local_player_nation, *it);
-						ui_state.tech_queue.erase(it);
+						/*
+						It's possible that the command is not executed immediately.
+						In this case this loop could run again BEFORE the nation gets the current research set.
+						If we remove the tech here from the queue, then the game will see that the next tech
+						can be researched and will send a command to start research of the next tech.
+						But it means that the tech research from the last command would be overwritten and skipped.
+						So no, we do not remove tech from the queue here, it will be removed eventually in the condition above,
+						when it will be actually researched.
+						OLD CODE here: ui_state.tech_queue.erase(it);
+						*/
 						break;
 					}
 				}
@@ -1617,6 +1626,7 @@ void state::save_user_settings() const {
 	US_SAVE(locale);
 	US_SAVE(graphics_mode);
 	US_SAVE(unit_disband_confirmation);
+	US_SAVE(trade_particles_count);
 #undef US_SAVE
 
 	simple_fs::write_file(settings_location, NATIVE("user_settings.dat"), &buffer[0], uint32_t(ptr - buffer));
@@ -1687,6 +1697,7 @@ void state::load_user_settings() {
 			US_LOAD(locale);
 			US_LOAD(graphics_mode);
 			US_LOAD(unit_disband_confirmation);
+			US_LOAD(trade_particles_count);
 #undef US_LOAD
 		} while(false);
 
@@ -1975,16 +1986,20 @@ void state::load_scenario_data(parsers::error_handler& err, sys::year_month_day 
 		int status;
 		status = luaL_dostring(lua_game_loop_environment, lua_combined_script.c_str());
 		if(status) {
+			auto error_string = lua_tostring(lua_game_loop_environment, -1);
+			window::emit_error_message(error_string, true);
 #ifdef _WIN32
-			OutputDebugStringA(lua_tostring(lua_game_loop_environment, -1));
+			OutputDebugStringA(error_string);
 #endif
 			lua_settop(lua_game_loop_environment, 0);
 			std::abort();
 		}
 		status = luaL_dostring(lua_game_loop_environment, lua_game_loop_script.c_str());
 		if(status) {
+			auto error_string = lua_tostring(lua_game_loop_environment, -1);
+			window::emit_error_message(error_string, true);
 #ifdef _WIN32
-			OutputDebugStringA(lua_tostring(lua_game_loop_environment, -1));
+			OutputDebugStringA(error_string);
 #endif
 			lua_settop(lua_game_loop_environment, 0);
 			std::abort();
@@ -1995,8 +2010,17 @@ void state::load_scenario_data(parsers::error_handler& err, sys::year_month_day 
 		err.accumulated_warnings += "update_administrative_efficiency function was overidden from LUA\n";
 	}
 
+	// Start with loading Lua scenario data.
 
-
+	lua_getfield(lua_game_loop_environment, LUA_GLOBALSINDEX, "LOAD_SCENARIO_DATA");
+	auto result = lua_pcall(lua_game_loop_environment, 0, 0, 0);
+	if(result) {
+		auto error_string = lua_tostring(lua_game_loop_environment, -1);
+		window::emit_error_message(error_string, true);
+		console_log(lua_tostring(lua_game_loop_environment, -1));
+		lua_settop(lua_game_loop_environment, 0);
+	}
+	assert(lua_gettop(lua_game_loop_environment) == 0);
 
 	//text::name_into_font_id(*this, "garamond_14");
 	ui::load_text_gui_definitions(*this, context.gfx_context, err);
@@ -2127,7 +2151,10 @@ void state::load_scenario_data(parsers::error_handler& err, sys::year_month_day 
 		}
 	}
 	// read commodities from goods.txt
-	{
+
+	if(world.commodity_size() == 0) {
+		// if lua haven't created any commodity
+
 		// FIRST: make sure that we have a money good
 		if(world.commodity_size() == 0) {
 			// create money
@@ -2148,10 +2175,31 @@ void state::load_scenario_data(parsers::error_handler& err, sys::year_month_day 
 			err.fatal = true;
 			err.accumulated_errors += "File common/goods.txt nor common/tradegoods.txt could be opened\n";
 		}
+	} else {
+		// register lua commodity names
+		world.for_each_commodity( [&](auto cid){
+			auto name_id = world.commodity_get_name(cid);
+			auto name = to_string_view(name_id);
+			auto name_str = std::string(name);
+			context.map_of_commodity_names.insert_or_assign(name_str, cid);
+		});
 	}
 
 	// read buildings.text
 	// world.factory_type_resize_construction_costs(world.commodity_size());
+	if(world.factory_type_size() == 0) {
+		context.lua_factories = false;
+	} else {
+		// register factory names
+		world.for_each_factory_type([&](auto cid) {
+			auto name_id = world.factory_type_get_name(cid);
+			auto name = to_string_view(name_id);
+			auto name_str = std::string (name);
+			context.map_of_factory_names.insert_or_assign(name_str, cid);
+		});
+		context.lua_factories = true;
+	}
+
 	{
 		auto buildings = open_file(common, NATIVE("buildings.txt"));
 		if(buildings) {
@@ -3208,7 +3256,6 @@ void state::load_scenario_data(parsers::error_handler& err, sys::year_month_day 
 	world.state_instance_resize_production_directive(production_directives::size(*this));
 
 	world.trade_route_resize_volume(world.commodity_size());
-	world.trade_route_resize_stabilization_volume(world.commodity_size());
 
 	world.nation_resize_factory_type_experience(world.factory_type_size());
 	world.nation_resize_factory_type_experience_priority_national(world.factory_type_size());
@@ -3217,9 +3264,11 @@ void state::load_scenario_data(parsers::error_handler& err, sys::year_month_day 
 	world.factory_resize_efficiency_level(economy::commodity_set::set_size);
 
 	world.market_resize_price(world.commodity_size());
+	world.market_resize_price_confidence(world.commodity_size());
 	world.market_resize_supply(world.commodity_size());
 	world.market_resize_demand(world.commodity_size());
 	world.market_resize_stockpile(world.commodity_size());
+	world.market_resize_stockpile_sales(world.commodity_size());
 	world.market_resize_consumption(world.commodity_size());
 	world.market_resize_intermediate_demand(world.commodity_size());
 
@@ -3235,6 +3284,7 @@ void state::load_scenario_data(parsers::error_handler& err, sys::year_month_day 
 	world.market_resize_satisfied_ratio_of_demanded_life_needs(world.pop_type_size());
 	world.market_resize_satisfied_ratio_of_demanded_everyday_needs(world.pop_type_size());
 	world.market_resize_satisfied_ratio_of_demanded_luxury_needs(world.pop_type_size());
+	world.market_resize_owned_ships(uint32_t(military_definitions.unit_base_definitions.size()));
 
 	world.market_resize_import(world.commodity_size());
 	world.market_resize_export(world.commodity_size());
@@ -3251,6 +3301,11 @@ void state::load_scenario_data(parsers::error_handler& err, sys::year_month_day 
 	world.market_resize_life_needs_weights(world.commodity_size());
 	world.market_resize_everyday_needs_weights(world.commodity_size());
 	world.market_resize_luxury_needs_weights(world.commodity_size());
+
+	world.market_resize_local_consumption_weights(world.commodity_size() * world.consumption_category_size());
+	world.market_resize_demand_per_consumption_category(world.consumption_category_size());
+	world.market_resize_cost_per_consumption_category(world.consumption_category_size());
+	world.market_resize_satisfied_demand_ratio_per_consumption_category(world.consumption_category_size());
 
 	world.province_resize_labor_price(economy::labor::total);
 	world.province_resize_labor_supply(economy::labor::total);
@@ -3748,10 +3803,14 @@ void state::load_scenario_data(parsers::error_handler& err, sys::year_month_day 
 	auto step_count_hint = 10.f;
 
 	world.for_each_province_adjacency([&](auto adj) {
-		if((world.province_adjacency_get_type(adj) & province::border::impassible_bit) == province::border::impassible_bit) {
-			map_state.map_data.railroad_starts.push_back(GLint(map_state.map_data.railroad_vertices.size()));
-			map_state.map_data.railroad_counts.push_back(0);
-			return;
+		auto ignore_sea_land_province = world.province_adjacency_get_canal_or_blockade_province(adj);
+
+		if(!ignore_sea_land_province) {
+			if((world.province_adjacency_get_type(adj) & province::border::impassible_bit) == province::border::impassible_bit) {
+				map_state.map_data.railroad_starts.push_back(GLint(map_state.map_data.railroad_vertices.size()));
+				map_state.map_data.railroad_counts.push_back(0);
+				return;
+			}
 		}
 
 		auto p1 = world.province_adjacency_get_connected_provinces(adj, 0);
@@ -3768,9 +3827,13 @@ void state::load_scenario_data(parsers::error_handler& err, sys::year_month_day 
 		//	return;
 		//}
 		bool sea_route = false;
-		if(p2.index() >= province_definitions.first_sea_province.index() || p1.index() >= province_definitions.first_sea_province.index()) {
+		if(
+			p2.index() >= province_definitions.first_sea_province.index()
+			|| p1.index() >= province_definitions.first_sea_province.index()
+		) {
 			sea_route = true;
 		}
+
 
 		auto mid_point_1 = world.province_get_mid_point(p1);
 		auto mid_point_2 = world.province_get_mid_point(p2);
@@ -3813,6 +3876,7 @@ void state::load_scenario_data(parsers::error_handler& err, sys::year_month_day 
 
 		auto handle_next = [&](int x, int y, int next_x, int next_y, float base_distance, int8_t direction, int8_t dx, int8_t dy, uint8_t speed, float prev_dist) {
 			auto next_idx = next_x + next_y * map_state.map_data.size_x;
+			auto local_idx = x + y * map_state.map_data.size_x;
 			if(!visited[next_idx]) {
 				for(int i = 1; i <= (int)speed; i++) {
 					auto nx = x + dx * i;
@@ -3826,10 +3890,29 @@ void state::load_scenario_data(parsers::error_handler& err, sys::year_month_day 
 				auto modifier = context.modifier_by_terrain_index[local_terrain];
 				auto& modifier_data = world.modifier_get_province_values(modifier);
 				auto move_cost_mod = terrain_cost[local_terrain];
-				if(sea_route) {
-					move_cost_mod = 100.f;
-					if (local_terrain == 255) move_cost_mod = 1.f;
+				dcon::province_id local_province = province::from_map_id(map_state.map_data.province_id_map[local_idx]);
+				dcon::province_id next_province = province::from_map_id(map_state.map_data.province_id_map[next_idx]);
+				bool apply_malus = true;
+				if(ignore_sea_land_province) {
+					apply_malus = (ignore_sea_land_province != local_province) && (ignore_sea_land_province != next_province);
 				}
+
+				if(sea_route) {
+					if(local_terrain != 255 && apply_malus) {
+						move_cost_mod = 100.f;
+					} else {
+						move_cost_mod = 1.f;
+					}
+				}
+				if(apply_malus) {
+					if(local_province != p1 && local_province != p2) {
+						move_cost_mod = move_cost_mod * 2.f;
+					}
+					if(next_province != p1 && next_province != p2) {
+						move_cost_mod = move_cost_mod * 2.f;
+					}
+				}
+
 				auto next_distance = prev_dist + base_distance * std::max(0.05f, (move_cost_mod * 20.f));
 				auto scaled_x = (float)next_x / (float)map_state.map_data.size_x;
 				auto scaled_y = (float)next_y / (float)map_state.map_data.size_y;
@@ -3932,6 +4015,7 @@ void state::load_scenario_data(parsers::error_handler& err, sys::year_month_day 
 		int step = 0;
 
 		glm::vec2 current_pos{ end_x, end_y };
+		glm::vec2 temp_prev = current_pos;
 
 
 		while(end_idx != start_idx && (int)(end_idx) >= 0) {
@@ -3976,21 +4060,28 @@ void state::load_scenario_data(parsers::error_handler& err, sys::year_month_day 
 			map_state.map_data.railroad_vertices.emplace_back(map::textured_line_vertex{ norm_next, +start_normal, 0.0f, distance });
 			map_state.map_data.railroad_vertices.emplace_back(map::textured_line_vertex{ norm_next, -start_normal, 1.0f, distance });
 
+			assert(norm_pos != norm_next);
+
 			end_idx = next_idx;
+			temp_prev = current_pos;
 			current_pos = next_pos;
 		}
 
 		glm::vec2 next_pos = put_in_local(mid_point_1, current_pos, float(map_state.map_data.size_x));
 		distance += glm::length(next_pos - current_pos) / float(map_state.map_data.size_y);
-		glm::vec2 prev_perpendicular = glm::normalize(mid_point_1 - current_pos);
-		auto start_normal = glm::vec2(-prev_perpendicular.y, prev_perpendicular.x);
-		auto norm_pos = current_pos / glm::vec2(map_state.map_data.size_x, map_state.map_data.size_y);
-		auto norm_next = next_pos / glm::vec2(map_state.map_data.size_x, map_state.map_data.size_y);
-		map_state.map_data.railroad_vertices.emplace_back(map::textured_line_vertex{ norm_pos, +start_normal, 0.0f, 0.f });//C
-		map_state.map_data.railroad_vertices.emplace_back(map::textured_line_vertex{ norm_pos, -start_normal, 1.0f, 0.f });//D
-		map_state.map_data.railroad_vertices.emplace_back(map::textured_line_vertex{ norm_next, +start_normal, 0.0f, distance });
-		map_state.map_data.railroad_vertices.emplace_back(map::textured_line_vertex{ norm_next, -start_normal, 1.0f, distance });
 
+		if(mid_point_1 != current_pos) {
+			glm::vec2 prev_perpendicular = glm::normalize(mid_point_1 - current_pos);
+			auto start_normal = glm::vec2(-prev_perpendicular.y, prev_perpendicular.x);
+			auto norm_pos = current_pos / glm::vec2(map_state.map_data.size_x, map_state.map_data.size_y);
+			auto norm_next = next_pos / glm::vec2(map_state.map_data.size_x, map_state.map_data.size_y);
+
+			map_state.map_data.railroad_vertices.emplace_back(map::textured_line_vertex{ norm_pos, +start_normal, 0.0f, 0.f });//C
+			map_state.map_data.railroad_vertices.emplace_back(map::textured_line_vertex{ norm_pos, -start_normal, 1.0f, 0.f });//D
+			map_state.map_data.railroad_vertices.emplace_back(map::textured_line_vertex{ norm_next, +start_normal, 0.0f, distance });
+			map_state.map_data.railroad_vertices.emplace_back(map::textured_line_vertex{ norm_next, -start_normal, 1.0f, distance });
+		}
+		
 		map_state.map_data.railroad_counts.push_back(GLsizei(map_state.map_data.railroad_vertices.size() - map_state.map_data.railroad_starts.back()));
 
 		clear_visited();

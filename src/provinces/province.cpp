@@ -11,6 +11,7 @@
 #include "triggers.hpp"
 #include "economy_stats.hpp"
 #include "events.hpp"
+#include "economy.hpp"
 #include <set>
 
 namespace province {
@@ -1075,6 +1076,7 @@ void change_province_owner(sys::state& state, dcon::province_id id, dcon::nation
 				state.world.state_instance_set_naval_base_is_taken(new_si, true);
 
 			auto new_market = state.world.create_market();
+			economy::initialize_needs_weights(state, new_market);
 
 			// set prices to something to avoid infinite demand:
 			if(old_market) {
@@ -1090,7 +1092,6 @@ void change_province_owner(sys::state& state, dcon::province_id id, dcon::nation
 			auto new_local_market = state.world.force_create_local_market(new_market, new_si);
 
 			// new state, new trade routes
-
 			std::set<dcon::state_instance_id::value_base_t> trade_route_candidates{};
 
 			// try to create trade routes to neighbors
@@ -1130,6 +1131,12 @@ void change_province_owner(sys::state& state, dcon::province_id id, dcon::nation
 					? adj.get_connected_provinces(0)
 					: adj.get_connected_provinces(1);
 
+				auto area = state.map_state.map_data.province_area_km2[province::to_map_id(through)];
+				// larger than the caspian sea
+				if(area > 500'000.f) {
+					continue;
+				}
+
 				for(auto adj2 : state.world.province_get_province_adjacency(through)) {
 					auto bits2 = adj2.get_type();
 					if((bits2 & province::border::impassible_bit) == 0) {
@@ -1156,13 +1163,27 @@ void change_province_owner(sys::state& state, dcon::province_id id, dcon::nation
 			for(auto candidate_trade_partner_val : trade_route_candidates) {
 				auto si = dcon::state_instance_id{ uint16_t(candidate_trade_partner_val - 1) };
 				auto target_market = state.world.state_instance_get_market_from_local_market(si);
-				auto new_route = state.world.force_create_trade_route(new_market, target_market);
-				state.world.trade_route_set_land_distance(new_route, 99999.f);
-				state.world.trade_route_set_sea_distance(new_route, 99999.f);
-				if(province::state_is_coastal(state, new_si) && province::state_is_coastal(state, si)) {
-					state.world.trade_route_set_is_sea_route(new_route, true);
+				auto market = new_market;
+				{
+					auto new_route = state.world.force_create_trade_route(market, target_market);
+					state.world.trade_route_set_is_sea_route(new_route, false);
+					state.world.trade_route_set_owner(new_route, market);
 				}
-				state.world.trade_route_set_is_land_route(new_route, true);
+				{
+					auto opposite_route = state.world.force_create_trade_route(target_market, market);
+					state.world.trade_route_set_is_sea_route(opposite_route, false);
+					state.world.trade_route_set_owner(opposite_route, market);
+				}
+				{
+					auto new_route = state.world.force_create_trade_route(market, target_market);
+					state.world.trade_route_set_is_sea_route(new_route, false);
+					state.world.trade_route_set_owner(new_route, target_market);
+				}
+				{
+					auto opposite_route = state.world.force_create_trade_route(target_market, market);
+					state.world.trade_route_set_is_sea_route(opposite_route, false);
+					state.world.trade_route_set_owner(opposite_route, target_market);
+				}
 			}
 
 			state_is_new = true;
@@ -1184,12 +1205,8 @@ void change_province_owner(sys::state& state, dcon::province_id id, dcon::nation
 			// save old trade routes
 			auto market = state.world.state_instance_get_market_from_local_market(new_si);
 			std::set<dcon::state_instance_id::value_base_t> old_trade_routes;
-			for(auto item : state.world.market_get_trade_route(market)) {
-				auto other =
-					item.get_connected_markets(0) != market
-					? item.get_connected_markets(0)
-					: item.get_connected_markets(1);
-
+			for(auto item : state.world.market_get_trade_route_as_origin(market)) {
+				auto other = item.get_target();
 				old_trade_routes.insert(other.get_zone_from_local_market().id.value);
 			}
 
@@ -1234,6 +1251,12 @@ void change_province_owner(sys::state& state, dcon::province_id id, dcon::nation
 					? adj.get_connected_provinces(0)
 					: adj.get_connected_provinces(1);
 
+				auto area = state.map_state.map_data.province_area_km2[province::to_map_id(through)];
+				// larger than the caspian sea
+				if(area > 500'000.f) {
+					continue;
+				}
+
 				for(auto adj2 : state.world.province_get_province_adjacency(through)) {
 					auto bits2 = adj2.get_type();
 					if((bits2 & province::border::impassible_bit) == 0) {
@@ -1262,13 +1285,26 @@ void change_province_owner(sys::state& state, dcon::province_id id, dcon::nation
 			for(auto candidate_trade_partner_val : trade_route_candidates) {
 				auto si = dcon::state_instance_id{ uint16_t(candidate_trade_partner_val - 1) };
 				auto target_market = state.world.state_instance_get_market_from_local_market(si);
-				auto new_route = state.world.force_create_trade_route(market, target_market);
-				state.world.trade_route_set_land_distance(new_route, 99999.f);
-				state.world.trade_route_set_sea_distance(new_route, 99999.f);
-				if(province::state_is_coastal(state, new_si) && province::state_is_coastal(state, si)) {
-					state.world.trade_route_set_is_sea_route(new_route, true);
+				{
+					auto new_route = state.world.force_create_trade_route(market, target_market);
+					state.world.trade_route_set_is_sea_route(new_route, false);
+					state.world.trade_route_set_owner(new_route, market);
 				}
-				state.world.trade_route_set_is_land_route(new_route, true);
+				{
+					auto opposite_route = state.world.force_create_trade_route(target_market, market);
+					state.world.trade_route_set_is_sea_route(opposite_route, false);
+					state.world.trade_route_set_owner(opposite_route, market);
+				}
+				{
+					auto new_route = state.world.force_create_trade_route(market, target_market);
+					state.world.trade_route_set_is_sea_route(new_route, false);
+					state.world.trade_route_set_owner(new_route, target_market);
+				}
+				{
+					auto opposite_route = state.world.force_create_trade_route(target_market, market);
+					state.world.trade_route_set_is_sea_route(opposite_route, false);
+					state.world.trade_route_set_owner(opposite_route, target_market);
+				}
 			}
 		}
 		if(was_slave_state) {
@@ -2250,7 +2286,7 @@ float distance_km(sys::state& state, dcon::province_adjacency_id pair) {
 
 
 // direct distance between two provinces; does not pathfind
-float direct_distance(sys::state& state, dcon::province_id a, dcon::province_id b) {
+float direct_distance(sys::state const& state, dcon::province_id a, dcon::province_id b) {
 	if(a == b)
 		return 0.0f;
 	auto apos = state.world.province_get_mid_point_b(a);
@@ -2262,7 +2298,7 @@ float direct_distance(sys::state& state, dcon::province_id a, dcon::province_id 
 }
 
 
-float direct_distance_km(sys::state& state, dcon::province_id a, dcon::province_id b) {
+float direct_distance_km(sys::state const& state, dcon::province_id a, dcon::province_id b) {
 	if(a == b)
 		return 0.0f;
 	auto apos = state.world.province_get_mid_point_b(a);
@@ -2480,7 +2516,7 @@ Generates the path for land trade
 Allowed to path through sea provinces.
 Becase there states which can have land  connection with other states while being split by sea
 */
-std::vector<dcon::province_id> make_land_trade_path(sys::state& state, dcon::province_id start, dcon::province_id end) {
+std::vector<dcon::province_id> make_land_trade_path(sys::state const& state, dcon::province_id start, dcon::province_id end) {
 
 	auto adjacency_func = [&](dcon::province_id to, dcon::province_id from, dcon::province_adjacency_id adj) {
 		auto bits = state.world.province_adjacency_get_type(adj);
@@ -2590,7 +2626,7 @@ std::vector<dcon::province_id> make_naval_unit_path(sys::state& state, dcon::pro
 }
 
 // for sea trade routes
-std::vector<dcon::province_id> make_sea_trade_route_path(sys::state& state, dcon::province_id start, dcon::province_id end) {
+std::vector<dcon::province_id> make_sea_trade_route_path(sys::state const& state, dcon::province_id start, dcon::province_id end) {
 
 	auto adjacency_func = [&](dcon::province_id to, dcon::province_id from, dcon::province_adjacency_id adj) {
 		auto bits = state.world.province_adjacency_get_type(adj);

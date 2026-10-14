@@ -338,9 +338,11 @@ void populate_land_unit_construction_demand(
 		auto required = base_cost.commodity_amounts[i] * details.cost_multiplier;
 		if(current >= required)	continue;
 		auto local_price = price(state, details.market, cid);
+		auto median_price = state.world.commodity_get_median_price(cid);
+		auto overprice = std::max(0.f, 1.f - (local_price + 1.f) / (median_price + 1.f) / 5.f);
 		auto can_purchase_budget = std::min(budget_limit, budget) / (local_price + 0.001f);
 		auto can_purchase_construction = required / construction_time;
-		auto can_purchase = std::min(can_purchase_budget, can_purchase_construction);
+		auto can_purchase = std::min(can_purchase_budget, can_purchase_construction) * overprice;
 		auto satisfaction = state.world.market_get_actual_probability_to_buy(details.market, cid);
 		budget = std::max(0.f, budget - can_purchase * local_price * satisfaction);
 		register_construction_demand(state, details.market, cid, can_purchase);
@@ -983,10 +985,12 @@ void populate_explanation_land_construction(
 			auto required = base_cost.commodity_amounts[i] * details.cost_multiplier;
 			if(current >= required) continue;
 			auto local_price = price(state, details.market, cid);
+			auto median_price = state.world.commodity_get_median_price(cid);
+			auto overprice = std::max(0.f, 1.f - (local_price + 1.f) / (median_price + 1.f) / 5.f);
 			auto actual_budget = std::min(budget_limit_per_project, dedicated_budget);
 			auto can_purchase_budget = actual_budget / (local_price + 0.001f);
 			auto can_purchase_construction = required / details.construction_time;
-			auto can_purchase = std::min(can_purchase_budget, can_purchase_construction);
+			auto can_purchase = std::min(can_purchase_budget, can_purchase_construction) * overprice;
 			auto satisfaction = state.world.market_get_actual_probability_to_buy(details.market, cid);
 			auto cost = std::min(dedicated_budget, can_purchase * satisfaction * local_price);
 			dedicated_budget -= cost;
@@ -1175,9 +1179,13 @@ void populate_province_building_construction_private_demand(
 		if(!cid) break;
 		auto current = current_purchased.commodity_amounts[i];
 		auto required = base_cost.commodity_amounts[i] * details.cost_multiplier;
+		// Try to avoid generating demand when local price is changing way too fast: we want predictable spendings
+		auto price_confidence = state.world.market_get_price_confidence(details.market, cid);
+		auto probability_to_buy = state.world.market_get_expected_probability_to_buy(details.market, cid);
+		auto confidence_factor = std::min(1.f, std::max(0.f, 0.1f + price_confidence * probability_to_buy));
 		if(current >= required) continue;
 		auto& cur_demand = state.world.market_get_private_construction_demand(details.market, cid);
-		state.world.market_set_private_construction_demand(details.market, cid, cur_demand + required / details.construction_time);
+		state.world.market_set_private_construction_demand(details.market, cid, cur_demand + required / details.construction_time * confidence_factor);
 	}
 }
 
@@ -1198,9 +1206,13 @@ void populate_state_construction_private_demand(
 		if(!cid) break;
 		auto current = current_purchased.commodity_amounts[i];
 		auto required = base_cost.commodity_amounts[i] * details.cost_multiplier;
+		// Try to avoid generating demand when local price is changing way too fast: we want predictable spendings
+		auto price_confidence = state.world.market_get_price_confidence(details.market, cid);
+		auto probability_to_buy = state.world.market_get_expected_probability_to_buy(details.market, cid);
+		auto confidence_factor = std::min(1.f, std::max(0.f, 0.1f + price_confidence * probability_to_buy));
 		if(current >= required) continue;
 		auto& cur_demand = state.world.market_get_private_construction_demand(details.market, cid);
-		state.world.market_set_private_construction_demand(details.market, cid, cur_demand + required / details.construction_time);
+		state.world.market_set_private_construction_demand(details.market, cid, cur_demand + required / details.construction_time * confidence_factor);
 	}
 }
 
