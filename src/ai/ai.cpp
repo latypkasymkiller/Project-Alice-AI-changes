@@ -18,6 +18,7 @@
 #include "triggers.hpp"
 #include "province.hpp"
 #include "commands.hpp"
+#include "nations_templates.hpp"
 #include "battle_prediction.hpp"
 
 namespace ai {
@@ -382,7 +383,8 @@ void remove_ai_data(sys::state& state, dcon::nation_id n) {
 
 bool unit_on_ai_control(const sys::state& state, dcon::army_id a) {
 	auto fat_id = dcon::fatten(state.world, a);
-	if(fat_id.get_controller_from_army_control().get_overlord_commanding_units()) {
+	auto nation = fat_id.get_controller_from_army_control();
+	if(nations::is_units_commanded_by_overlord(state, nation)) {
 		return false;
 	}
 	return fat_id.get_controller_from_army_control().get_is_player_controlled()
@@ -391,7 +393,8 @@ bool unit_on_ai_control(const sys::state& state, dcon::army_id a) {
 }
 bool unit_on_ai_control(const sys::state& state, dcon::navy_id a) {
 	auto fat_id = dcon::fatten(state.world, a);
-	if(fat_id.get_controller_from_navy_control().get_overlord_commanding_units()) {
+	auto nation = fat_id.get_controller_from_navy_control();
+	if(nations::is_units_commanded_by_overlord(state, nation)) {
 		return false;
 	}
 	return !fat_id.get_controller_from_navy_control().get_is_player_controlled();
@@ -1801,7 +1804,8 @@ bool army_ready_for_battle(sys::state& state, dcon::nation_id n, dcon::army_id a
 		return false;
 	}
 
-	return state.world.regiment_get_org(sample_reg) >= 0.5f;
+	// org cap is always 100% no matter supply
+	return state.world.regiment_get_org(sample_reg) > 0.5f;
 }
 
 /*
@@ -2047,6 +2051,8 @@ float estimate_balanced_composition_factor(sys::state& state, dcon::army_id a) {
 	float str_cav = 0.f;
 	for(const auto reg : regs) {
 		float str = reg.get_regiment().get_strength() * reg.get_regiment().get_org();
+		assert(std::isfinite(reg.get_regiment().get_strength()));
+		assert(std::isfinite(reg.get_regiment().get_org()));
 		if(auto utid = reg.get_regiment().get_type(); utid) {
 			switch(state.military_definitions.unit_base_definitions[utid].type) {
 			case military::unit_type::infantry:
@@ -3032,7 +3038,7 @@ void update_land_constructions(sys::state& state) {
 			continue;
 		auto disarm = n.get_disarmed_until();
 		if(disarm && state.current_date < disarm)
-			continue;
+			continue;		
 
 		static std::vector<dcon::province_land_construction_id> hopeless_construction;
 		hopeless_construction.clear();
@@ -3047,17 +3053,9 @@ void update_land_constructions(sys::state& state) {
 			auto date = fat_plc.get_start_date();
 			auto today = state.current_date;
 			auto days_passed = float(1 + today.value - date.value);
-			auto progress = 1.f;
-			auto& purchased = fat_plc.get_purchased_goods();
-			auto& def  = state.military_definitions.unit_base_definitions[fat_plc.get_type()];
-			for(uint8_t i = 0; i < purchased.set_size; i++) {
-				auto cid = purchased.commodity_type[i];
-				if (!cid) break;
-				auto cost = def.build_cost.commodity_amounts[i];
-				auto bought = purchased.commodity_amounts[i];
-				progress = std::min(progress, bought / cost);
-			}
-			auto estimated_progress = days_passed / float(def.build_time);
+			auto progress = economy::construction_progress(state, plcid);
+			uint32_t build_time = economy::construction_get_actual_construction_time(state, plcid);
+			auto estimated_progress = days_passed / float(build_time);
 			if(estimated_progress > 5.f * progress && estimated_progress >= 1.f) {
 				hopeless_construction.push_back(plcid);
 				return;
