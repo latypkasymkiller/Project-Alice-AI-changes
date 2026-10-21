@@ -744,11 +744,6 @@ void state::render() { // called to render the frame may (and should) delay retu
 
 
 	auto game_state_was_updated = game_state_updated.exchange(false, std::memory_order::acq_rel);
-	if(game_state_was_updated && !current_scene.starting_scene && !ui_state.lazy_load_in_game) {
-		window::change_cursor(*this, window::cursor_type::busy);
-		ui::create_in_game_windows(*this);
-		window::change_cursor(*this, window::cursor_type::normal_cancel_busy);
-	}
 	// Process queued ui function invocations from command thread
 	auto* queued_func = ui_state.queued_invocations.front();
 	while(queued_func) {
@@ -1182,14 +1177,12 @@ void state::render() { // called to render the frame may (and should) delay retu
 }
 
 void state::on_create() {
-	// lua
-	lua_alice_api::set_state(this);
-	lua_alice_api::setup_gameloop_environment(*this);
+	// lua ui environment
 
 	lua_alice_api::setup_ui_environment(*this);
 
 
-	// populate the table with scripted functions from lua_combined_script and lua_ui_script (read during scenario generation)
+	// populate the table with scripted functions from lua_ui_script and the combined script (read during scenario generation)
 	{
 		int status;
 		status = luaL_dostring(lua_ui_environment, lua_combined_script.c_str());
@@ -1200,14 +1193,6 @@ void state::on_create() {
 			lua_settop(lua_ui_environment, 0);
 			std::abort();
 		}
-		status = luaL_dostring(lua_game_loop_environment, lua_combined_script.c_str());
-		if(status) {
-#ifdef _WIN32
-			OutputDebugStringA(lua_tostring(lua_game_loop_environment, -1));
-#endif
-			lua_settop(lua_game_loop_environment, 0);
-			std::abort();
-		}
 
 		status = luaL_dostring(lua_ui_environment, lua_ui_script.c_str());
 		if(status) {
@@ -1215,14 +1200,6 @@ void state::on_create() {
 			OutputDebugStringA(lua_tostring(lua_ui_environment, -1));
 #endif
 			lua_settop(lua_ui_environment, 0);
-			std::abort();
-		}
-		status = luaL_dostring(lua_game_loop_environment, lua_game_loop_script.c_str());
-		if(status) {
-#ifdef _WIN32
-			OutputDebugStringA(lua_tostring(lua_game_loop_environment, -1));
-#endif
-			lua_settop(lua_game_loop_environment, 0);
 			std::abort();
 		}
 	}
@@ -1273,6 +1250,9 @@ void state::on_create() {
 
 	ui::adjust_in_game_windows(*this);
 	map_mode::set_map_mode(*this, map_mode::mode::political);
+	// Create the ingame windows early, to prevent a message in the message loop to refer to a UI item before it has been created (nullptr deref).
+	// Could happen if the player clicked stuff while the game was transitioning from nation_picker to ingame_basic for the first time
+	ui::create_in_game_windows(*this); 
 }
 //
 // string pool functions
@@ -1850,8 +1830,8 @@ void state::update_ui_scale(float new_scale) {
 
 	if(ui_state.outliner_window)
 		ui_state.outliner_window->impl_on_update(*this);
-	if(current_scene.game_in_progress)
-		alice_ui::display_at_front<alice_ui::make_production_main>(*this, alice_ui::display_closure_command::return_pointer)->base_data.size.y = int16_t(y_size / user_settings.ui_scale);
+	//if(current_scene.game_in_progress)
+	//	alice_ui::display_at_front<alice_ui::make_production_main>(*this, alice_ui::display_closure_command::return_pointer)->base_data.size.y = int16_t(y_size / user_settings.ui_scale);
 
 	for(auto& s : ui_templates.backgrounds) {
 		s.renders.release_renders();
@@ -2709,12 +2689,36 @@ void state::load_scenario_data(parsers::error_handler& err, sys::year_month_day 
 			load_from_dir(subdir);
 		}
 	}
-
+	// Check each land province has an rgo, and no sea province or uncolonized provinces has any factories defined
 	province::for_each_land_province(*this, [&](dcon::province_id p) {
 		if(auto rgo = world.province_get_rgo(p); !rgo) {
 			auto name = world.province_get_name(p);
 			err.accumulated_errors += std::string("province ") + text::produce_simple_string(*this, name) + " is missing an rgo\n";
 			world.province_set_rgo(p, economy::money);
+		}
+		auto factories = world.province_get_factory_location(p);
+		bool has_owner = bool(world.province_get_nation_from_province_ownership(p));
+		if(!has_owner && factories.end() != factories.begin()) {
+			auto name = world.province_get_name(p);
+			err.accumulated_errors += std::string("Uncolonized province ") + text::produce_simple_string(*this, name) + " has factories defined\n";
+			while(factories.end() != factories.begin()) {
+				world.delete_factory((*factories.begin()).get_factory());
+			}
+		}
+	});
+	province::for_each_sea_province(*this, [&](dcon::province_id p) {
+		if(auto rgo = world.province_get_rgo(p); rgo) {
+			auto name = world.province_get_name(p);
+			err.accumulated_errors += std::string("Sea province ") + text::produce_simple_string(*this, name) + " has an rgo defined\n";
+			world.province_set_rgo(p, dcon::commodity_id{ });
+		}
+		auto factories = world.province_get_factory_location(p);
+		auto name = world.province_get_name(p);
+		if(factories.end() != factories.begin()) {
+			err.accumulated_errors += std::string("Sea province ") + text::produce_simple_string(*this, name) + " has factories defined\n";
+			while(factories.end() != factories.begin()) {
+				world.delete_factory((*factories.begin()).get_factory());
+			}
 		}
 	});
 	// check that all provinces are assigned to a state
@@ -3108,6 +3112,7 @@ void state::load_scenario_data(parsers::error_handler& err, sys::year_month_day 
 
 	// misc touch ups
 	nations::generate_initial_state_instances(*this);
+	province::reset_all_state_capitals(*this);
 	world.nation_resize_variables(uint32_t(national_definitions.num_allocated_national_variables));
 	world.pop_resize_udemographics(pop_demographics::size(*this));
 	national_definitions.global_flag_variables.resize((national_definitions.num_allocated_global_flags + 7) / 8, dcon::bitfield_type{ 0 });
@@ -4566,6 +4571,36 @@ void state::on_scenario_load() {
 	} };
 
 	dispatch.detach();
+
+	// Lua init. Save lua ui environment for later when UI is available
+
+	lua_alice_api::set_state(this);
+	lua_alice_api::setup_gameloop_environment(*this);
+
+
+
+	// populate the table with scripted functions from lua_combined_script (read during scenario generation). Do ui script later when UI is available
+	{
+		int status;
+		status = luaL_dostring(lua_game_loop_environment, lua_combined_script.c_str());
+		if(status) {
+#ifdef _WIN32
+			OutputDebugStringA(lua_tostring(lua_game_loop_environment, -1));
+#endif
+			lua_settop(lua_game_loop_environment, 0);
+			std::abort();
+		}
+		status = luaL_dostring(lua_game_loop_environment, lua_game_loop_script.c_str());
+		if(status) {
+#ifdef _WIN32
+			OutputDebugStringA(lua_tostring(lua_game_loop_environment, -1));
+#endif
+			lua_settop(lua_game_loop_environment, 0);
+			std::abort();
+		}
+	}
+
+
 #endif
 
 }
