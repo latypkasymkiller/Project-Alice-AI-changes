@@ -2113,7 +2113,7 @@ selected_units_supply_priority_normal_tooltip_1;Все выбранные час
 selected_units_supply_priority_unknown_tooltip_1;Все выбранные части сейчас имеют ?Oразный?W приоритет снабжения
 stockpile_change;$val$/день
 stockpile_change_tooltip;Дневное изменение запасов: ?Y$val$?W
-stockpile_days_left;осталось $days$ дн.
+stockpile_days_left;$days$ дней осталось
 stockpile_days_left_tooltip;Запасов хватит примерно на ?Y$days$?W дн. при текущем уровне потребления
 stockpile_target_set_label;Задать целевой объём запасов:
 stockpile_target_tooltip;Цель запасов: ?Y$val$?W
@@ -2146,3 +2146,4 @@ unit_priority_tooltip_3;(Эта часть имеет ?Gвысокий?W при�
 unit_supply_priority_high_tooltip_1;Эта часть сейчас имеет ?Gвысокий?W приоритет снабжения
 unit_supply_priority_low_tooltip_1;Эта часть сейчас имеет ?Rнизкий?W приоритет снабжения
 unit_supply_priority_normal_tooltip_1;Эта часть сейчас имеет ?Yсредний?W приоритет снабжения
+activated_by_tech;Активировано технологией ?Y$x$?!
