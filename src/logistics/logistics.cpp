@@ -434,7 +434,7 @@ bool supply_route_path_is_active(const sys::state& state, dcon::supply_route_pat
 	return state.world.supply_route_path_get_is_active(path);
 }
 
-static bool adj_province_pair_valid(const sys::state& state, dcon::province_adjacency_id prov_adj, dcon::province_id prov_1, dcon::province_id prov_2) {
+[[maybe_unused]] static bool adj_province_pair_valid(const sys::state& state, dcon::province_adjacency_id prov_adj, dcon::province_id prov_1, dcon::province_id prov_2) {
 	dcon::province_id adj_prov_1 = state.world.province_adjacency_get_connected_provinces(prov_adj, 0);
 	dcon::province_id adj_prov_2 = state.world.province_adjacency_get_connected_provinces(prov_adj, 1);
 	return (prov_1 != prov_2) && (adj_prov_1 == prov_1 || adj_prov_1 == prov_2) && (adj_prov_2 == prov_1 || adj_prov_2 == prov_2);

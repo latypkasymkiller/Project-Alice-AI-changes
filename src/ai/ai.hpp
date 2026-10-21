@@ -40,6 +40,7 @@ float estimate_army_offensive_strength(sys::state& state, dcon::army_id a);
 float estimate_army_defensive_strength(sys::state& state, dcon::army_id a);
 float estimate_rebel_strength(sys::state& state, dcon::province_id p);
 float estimate_win_probability(sys::state& state, std::vector<dcon::army_id> const& attacker, std::vector<dcon::army_id> const& defender);
+float estimate_target_win_probability(sys::state& state, std::vector<dcon::army_id> const& attacker, std::vector<dcon::army_id> const& defender, dcon::province_id attack_from);
 
 void update_ai_embargoes(sys::state& state);
 

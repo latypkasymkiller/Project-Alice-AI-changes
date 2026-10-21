@@ -68,3 +68,8 @@ graphics_details_0;Низкая
 graphics_details_1;Классическая
 graphics_details_2;Современная
 disband_confirmation_label;Подтверждение расформирования отрядов
+
+graphics_details_3;Современная классика
+reset_trade_particles;Сбросить частицы торговли
+trade_particles_count;Количество частиц
+trade_particles_section_label;Настройки частиц торговли

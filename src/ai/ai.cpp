@@ -12,6 +12,7 @@
 #include "gui_effect_tooltips.hpp"
 #include "math_fns.hpp"
 #include "military.hpp"
+#include "military_templates.hpp"
 #include "politics.hpp"
 #include "prng.hpp"
 #include "province_templates.hpp"
@@ -2177,7 +2178,9 @@ float estimate_army_offensive_strength(sys::state& state, dcon::army_id a) {
 	return std::max(0.1f, strength * scale);
 }
 
-float estimate_win_probability(sys::state& state, std::vector<dcon::army_id> const& attacker, std::vector<dcon::army_id> const& defender) {
+// Core of the battle model. The caller supplies the crossing penalty the real assault will face,
+// because the correct answer depends on where the attack is launched from.
+static float estimate_win_probability_core(sys::state& state, std::vector<dcon::army_id> const& attacker, std::vector<dcon::army_id> const& defender, military::crossing_type crossing) {
 	if(attacker.size() == 0) {
 		return 0.f;
 	}
@@ -2235,13 +2238,8 @@ float estimate_win_probability(sys::state& state, std::vector<dcon::army_id> con
 	}
 
 
-	auto attack_from = state.world.army_get_location_from_army_location(attacker[0]);
+	// the target province supplies the terrain modifier; crossing comes from the caller
 	auto attack_toward = state.world.army_get_location_from_army_location(defender[0]);
-	auto adj = state.world.get_province_adjacency_by_province_pair(attack_toward, attack_from);
-	auto crossing = military::crossing_type::none;
-	if(adj) {
-		crossing = military::get_crossing_type(state, adj);
-	}
 
 	dcon::leader_id a_lid;
 	float a_score = -999.f;
@@ -2307,6 +2305,34 @@ float estimate_win_probability(sys::state& state, std::vector<dcon::army_id> con
 	);
 
 	return probability;
+}
+
+// GUI path (unit tooltip): crossing taken from where the selected attacker actually stands.
+float estimate_win_probability(sys::state& state, std::vector<dcon::army_id> const& attacker, std::vector<dcon::army_id> const& defender) {
+	military::crossing_type crossing = military::crossing_type::none;
+	if(attacker.size() > 0 && defender.size() > 0) {
+		auto attack_from = state.world.army_get_location_from_army_location(attacker[0]);
+		auto attack_toward = state.world.army_get_location_from_army_location(defender[0]);
+		auto adj = state.world.get_province_adjacency_by_province_pair(attack_toward, attack_from);
+		if(adj) {
+			crossing = military::get_crossing_type(state, adj);
+		}
+	}
+	return estimate_win_probability_core(state, attacker, defender, crossing);
+}
+
+// AI path: at target-evaluation time the armies are still weeks away from the front, so the crossing
+// penalty must come from the province the assault will actually be launched from (the assembly point).
+float estimate_target_win_probability(sys::state& state, std::vector<dcon::army_id> const& attacker, std::vector<dcon::army_id> const& defender, dcon::province_id attack_from) {
+	military::crossing_type crossing = military::crossing_type::none;
+	if(attacker.size() > 0 && defender.size() > 0 && attack_from) {
+		auto attack_toward = state.world.army_get_location_from_army_location(defender[0]);
+		auto adj = state.world.get_province_adjacency_by_province_pair(attack_toward, attack_from);
+		if(adj) {
+			crossing = military::get_crossing_type(state, adj);
+		}
+	}
+	return estimate_win_probability_core(state, attacker, defender, crossing);
 }
 
 float estimate_enemy_defensive_force(sys::state& state, dcon::province_id target, dcon::nation_id by) {
@@ -2378,6 +2404,9 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 	};
 	std::vector<a_str> ready_armies;
 	bool const use_pressure = ai::pressure_enabled(state);
+	// Battle-model gate: 0 in the define restores the legacy always-attack behavior
+	float const min_win_probability = std::max(0.0f, std::min(state.defines.alice_ai_min_win_probability, 0.99f));
+	bool const use_win_prediction = min_win_probability > 0.0f;
 	ai::pressure_field* attack_field = nullptr;
 	if(use_pressure) {
 		attack_field = &ai::cached_tactical_field(state, n);
@@ -2595,7 +2624,7 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 					} else {
 						for(auto padj : loc_fat.get_province_adjacency()) {
 							auto other = padj.get_connected_provinces(0) == loc_fat ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
-							if(other.id != potential_targets[i].location && military::province_has_enemy_army(state, other.id, n)) {
+							if(other.id != potential_targets[i].location && military::province_has_army<military::battle_included::yes, military::retreat_included::yes, military::blackflag_included::yes, military::participants_included::enemies>(state, other.id, n)) {
 								should_hold_frontline = true;
 								break;
 							}
@@ -2672,6 +2701,47 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		if(!central_province)
 			continue;
 
+		// Battle prediction gate: run the trained battle model on the actual stacks before committing.
+		// The crossing penalty is the one the real assault will face from the assembly province.
+		// A predicted loss skips the target for today and leaves the stack free for other targets.
+		if(use_win_prediction) {
+			std::vector<dcon::army_id> attack_stack;
+			std::vector<dcon::army_id> defense_stack;
+			for(int32_t m2 = int32_t(ready_armies.size()); m2-- > k + 1; ) {
+				for(auto ar : state.world.province_get_army_location(ready_armies[m2].p)) {
+					if(ar.get_army().get_battle_from_army_battle_participation()
+						|| n != ar.get_army().get_controller_from_army_control()
+						|| ar.get_army().get_navy_from_army_transport()
+						|| ar.get_army().get_black_flag()
+						|| ar.get_army().get_arrival_time()
+						|| army_activity(ar.get_army().get_ai_activity()) != army_activity::on_guard
+						|| !army_ready_for_battle(state, n, ar.get_army())) {
+
+						continue;
+					}
+					attack_stack.push_back(ar.get_army().id);
+				}
+			}
+			// Only the armies standing in the target fight the first round of the assault; the reserves
+			// counted by estimate_enemy_defensive_force arrive over the following days. Armies without
+			// a controller are skipped: the model needs a nation for the unit-stats lookup.
+			for(auto ar : state.world.province_get_army_location(potential_targets[i].location)) {
+				auto def_ctrl = ar.get_army().get_controller_from_army_control();
+				if(def_ctrl && def_ctrl != n && (military::are_at_war(state, n, def_ctrl) || military::are_enemies(state, n, def_ctrl))) {
+					defense_stack.push_back(ar.get_army().id);
+				}
+			}
+
+			// an empty attack_stack means the strength gate passed on the epsilon alone (empty province):
+			// nothing would be sent anyway, and the model must not block walking into undefended land
+			if(!attack_stack.empty()) {
+				float const win_chance = estimate_target_win_probability(state, attack_stack, defense_stack, central_province);
+				if(win_chance < min_win_probability) {
+					continue; // the model expects this assault to lose -- try the next target
+				}
+			}
+		}
+
 		// issue safe-move gather command
 		for(int32_t m = int32_t(ready_armies.size()); m-- > k + 1; ) {
 			assert(m >= 0 && m < int32_t(ready_armies.size()));
@@ -2733,7 +2803,7 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 				} else {
 					for(auto padj : loc_fat.get_province_adjacency()) {
 						auto other = padj.get_connected_provinces(0) == loc_fat ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
-						if(other.id != potential_targets[i].location && military::province_has_enemy_army(state, other.id, n)) {
+						if(other.id != potential_targets[i].location && military::province_has_army<military::battle_included::yes, military::retreat_included::yes, military::blackflag_included::yes, military::participants_included::enemies>(state, other.id, n)) {
 							should_hold_frontline = true;
 							break;
 						}

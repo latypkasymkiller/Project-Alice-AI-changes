@@ -2023,3 +2023,125 @@ factory_investments_header;Инвестиции
 total_investments_label;Всего
 investment_efficiency_tooltip;Инструменты, товары эффективности и оборудование
 investment_expansion_tooltip;Расширение
+activated_by_tech;Открывается технологией ?Y$x$?!
+alice_budget_administration_expense;Жалование чиновникам
+alice_budget_education_expense;Народное образование
+alice_budget_military_expense;Жалование армии
+alice_mvstatecap_1;Переносит столицу рынка и государственные запасы штата в эту провинцию
+alice_mvstatecap_2;Штат принадлежит нам
+alice_mvstatecap_3;Провинция не является столицей рынка
+alice_mvstatecap_4;Перезарядка не активна (осталось $val$ дн.)
+alice_mvstatecap_5;Ни одна провинция штата не оккупирована и не находится в осаде
+army_construction_consumption;Строительство армии
+battle_reinforcement_satisfaction_tooltip;Удовлетворённость пополнением: ?Y$val$?W
+battle_supply_satisfaction_tooltip;Удовлетворённость снабжением: ?Y$val$?W
+budget_military_satisfaction_label;Удовлетворённость армии:
+budget_military_settings;Удовлетворённость
+building_construction_consumption;Строительство зданий
+confirm_stockpile_target_tooltip;Подтвердить целевой объём запасов
+construction_consumption_title;Строительство
+consumption_amount;Количество
+consumption_amount_tooltip;Слева от разделителя показан выполненный объём, справа — требуемый
+consumption_fufillment_percent;Выполнено
+consumption_item;Товар
+consumption_section_army_construction_info_tooltip;Определяет, какой процент ежедневной потребности в строительстве армии направляется из государственных запасов.\nЗначение 100 означает, что строительство армии будет пытаться покрывать 100% ежедневной потребности из запасов, значение 0 — что армия не будет получать товары.\nЭта настройка также влияет на объём закупок для строительства армии из строительного бюджета в окне бюджета.
+consumption_section_army_reinforcement_info_tooltip;Определяет, какой процент ?Oпополнения?W армии направляется из государственных запасов.\nЗначение 100 означает, что армии будут пытаться покрывать 100% потребности в ?Oпополнении?W из запасов, значение 0 — что армии не будут получать товары.\nУдовлетворённость ?Oпополнением?W определяет, насколько быстро подразделение восстанавливает численность, если она ниже 100%.
+consumption_section_army_supply_info_tooltip;Определяет, какой процент ?Gснабжения?W армии направляется из государственных запасов.\nЗначение 100 означает, что армии будут пытаться покрывать 100% потребности в ?Gснабжении?W из запасов, значение 0 — что армии не будут получать товары.\nУдовлетворённость ?Gснабжением?W определяет восстановление организации.
+consumption_section_building_construction_info_tooltip;Определяет, какой процент ежедневной потребности государственных зданий направляется из государственных запасов.\nЗначение 100 означает, что строительство государственных зданий будет пытаться покрывать 100% ежедневной потребности из запасов, значение 0 — что оно не будет получать товары.\nЭта настройка также влияет на объём закупок для строительства государственных зданий из строительного бюджета в окне бюджета.
+consumption_section_factory_construction_info_tooltip;Определяет, какой процент ежедневной потребности государственных фабрик направляется из государственных запасов.\nЗначение 100 означает, что строительство государственных фабрик будет пытаться покрывать 100% ежедневной потребности из запасов, значение 0 — что оно не будет получать товары.\nЭта настройка также влияет на объём закупок для строительства государственных фабрик из строительного бюджета в окне бюджета.
+consumption_section_navy_construction_info_tooltip;Определяет, какой процент ежедневной потребности в строительстве флота направляется из государственных запасов.\nЗначение 100 означает, что строительство флота будет пытаться покрывать 100% ежедневной потребности из запасов, значение 0 — что оно не будет получать товары.\nЭта настройка также влияет на объём закупок для строительства флота из строительного бюджета в окне бюджета.
+consumption_section_navy_reinforcement_info_tooltip;Определяет, какой процент ?Oпополнения?W флота направляется из государственных запасов.\nЗначение 100 означает, что флоты будут пытаться покрывать 100% потребности в ?Oпополнении?W из запасов, значение 0 — что флоты не будут получать товары.\nУдовлетворённость ?Oпополнением?W определяет, насколько быстро корабль ремонтируется, если его прочность ниже 100% и он находится в провинции с морской базой.
+consumption_section_navy_supply_info_tooltip;Определяет, какой процент ?Gснабжения?W флота направляется из государственных запасов.\nЗначение 100 означает, что флоты будут пытаться покрывать 100% потребности в ?Gснабжении?W из запасов, значение 0 — что флоты не будут получать товары.\nУдовлетворённость ?Gснабжением?W определяет восстановление организации.
+current_stockpile_count_tooltip;В запасах: ?Y$val$?W
+factory_construction_consumption;Строительство фабрик
+government_stockpiles;Государственные запасы
+government_stockpiles_target;Текущая цель: $val$
+government_stockpiles_title;Государственные запасы
+land_battle_supply_satisfaction_header_tooltip;Ожидаемая скорость пополнения — ?Y$val$?W солдат в месяц при следующей удовлетворённости:
+land_reinforcement_consumption;Пополнение армии
+land_supply_consumption;Снабжение армии
+logistics_satisfaction_label;Удовлетворённость:
+logistics_satisfaction_tooltip;Средняя удовлетворённость по требуемым товарам в этом разделе — ?Y$val$?W
+logistics_supply_loss_label;Уровень потерь:
+logistics_supply_loss_tooltip;Средний процент потерь перевозимых товаров в этом разделе — ?Y$val$?W
+logistics_supply_throughput_label;Пропускная способность:
+logistics_supply_throughput_tooltip;Пропускная способность перевозимых товаров в этом разделе — ?Y$val$?W
+logistics_topbar_army_tooltip;Наши армии сейчас получают ?Y$total$?W от общей потребности в снабжении и пополнении\nУдовлетворённость снабжением армии: ?Y$x$?W\nУдовлетворённость пополнением армии: ?Y$y$?W
+logistics_topbar_navy_tooltip;Наши флоты сейчас получают ?Y$total$?W от общей потребности в снабжении и пополнении\nУдовлетворённость снабжением флота: ?Y$x$?W\nУдовлетворённость пополнением флота: ?Y$y$?W
+logistics_topbar_supply_loss_tooltip;Наши пути снабжения сейчас теряют в среднем ?Y$total$?W перевозимых товаров\nПотери путей снабжения армии: ?Y$x$?W\nПотери путей снабжения флота: ?Y$y$?W\nПотери путей снабжения строительства: ?Y$val$?W
+logistics_topbar_supply_throughput_tooltip;Наши пути снабжения сейчас работают со средней пропускной способностью ?Y$total$?W\nПропускная способность путей снабжения армии: ?Y$x$?W\nПропускная способность путей снабжения флота: ?Y$y$?W\nПропускная способность путей снабжения строительства: ?Y$val$?W
+military_consumption_title;Армия
+military_stockpile_info_tooltip;Значок каждого товара и числа под ним показывают состояние всех суммированных государственных запасов:\n    - текущий объём на складах\n    - текущая цель запасов для настройки расходов на запасы\n    - дневное изменение (положительное или отрицательное)\n    - оценочное число дней до исчерпания запаса.\nВыберите товар ?Gправым щелчком?W по значку, чтобы задать целевой объём в правом окне.
+military_stockpile_targets_info_tooltip;Выбрав товар, задайте здесь его целевой объём, введя новое значение (целое или дробное число)\nНажмите ?GEnter?W или кнопку подтверждения ниже, чтобы применить новую цель.
+military_stockpile_value_divider;/
+military_stockpile_window_header;Военные запасы
+military_title;Армия
+mlitary_stockpile_commodity_tooltip;?GЛевый щелчок?W — выбрать товар, ?Rправый щелчок?W — отменить выбор
+mlitary_stockpile_target_error;?RНеверный ввод?W
+modifier_land_supply_speed;Скорость сухопутного снабжения
+modifier_national_land_supply_loss;Потери сухопутного снабжения
+modifier_national_land_supply_throughput;Пропускная способность сухопутного снабжения
+modifier_national_naval_supply_loss;Потери морского снабжения
+modifier_national_naval_supply_throughput;Пропускная способность морского снабжения
+modifier_national_port_supply_capacity;Ёмкость портов снабжения
+modifier_naval_supply_speed;Скорость морского снабжения
+modifier_port_supply_capacity;Ёмкость портов снабжения
+modifier_supply_loss;Потери снабжения
+modifier_supply_throughput;Пропускная способность снабжения
+nation_base;Базовый уровень страны
+naval_reinforcement_consumption;Пополнение флота
+naval_supply_consumption;Снабжение флота
+navy_construction_consumption;Строительство флота
+only_military_goods_label;Показывать только военные товары
+open_mil_stockpile_button_text;Военные запасы
+port_capacity_efficiency_header_tooltip;Эффективность ёмкости портов:
+port_supply_capacity_mul_access_modifier;Доступ к порту
+port_supply_capacity_mul_blockaded_modifier;Порт блокирован
+port_supply_capacity_mul_hostile_units_modifier;Вражеские армии
+port_supply_capacity_total_tooltip;Общая ёмкость портов снабжения: ?Y$value$?W
+prio_armies_in_battle_label;Приоритет снабжения армий в бою
+prio_navies_in_battle_label;Приоритет снабжения флотов в бою
+province_control;Контроль провинции
+province_market_government_stockpiles;Государственные запасы: ?Y$val$?!
+province_market_stockpiles_sales;Цель продажи запасов: ?Y$val$?!
+province_militancy;Агрессивность провинции
+selected_units_priority_tooltip_2;Увеличивайте приоритет всех выбранных частей ?Yлевым щелчком?W и уменьшайте ?Yправым?W
+selected_units_supply_priority_high_tooltip_1;Все выбранные части сейчас имеют ?Gвысокий?W приоритет снабжения
+selected_units_supply_priority_low_tooltip_1;Все выбранные части сейчас имеют ?Rнизкий?W приоритет снабжения
+selected_units_supply_priority_normal_tooltip_1;Все выбранные части сейчас имеют ?Yсредний?W приоритет снабжения
+selected_units_supply_priority_unknown_tooltip_1;Все выбранные части сейчас имеют ?Oразный?W приоритет снабжения
+stockpile_change;$val$/день
+stockpile_change_tooltip;Дневное изменение запасов: ?Y$val$?W
+stockpile_days_left;осталось $days$ дн.
+stockpile_days_left_tooltip;Запасов хватит примерно на ?Y$days$?W дн. при текущем уровне потребления
+stockpile_target_set_label;Задать целевой объём запасов:
+stockpile_target_tooltip;Цель запасов: ?Y$val$?W
+supply_efficiency_adjacency_tooltip;?Y$prov$?W -> Доступно: ?G$value$?W. Использовано: ?R$val$?W. Эффективность: ?Y$x$?W
+supply_efficiency_header_tooltip;Эффективность сообщений между провинциями:
+supply_loss_add_convoy_raiding_modifier;Рейды на конвои
+supply_loss_add_hostile_armies_modifier;Вражеские армии
+supply_loss_total_tooltip;Потери снабжения: ?Y$value$?W
+supply_throughput_efficiency_tooltip;Чистая эффективность: ?Y$value$?W
+supply_throughput_mult_access_modifier;Доступ снабжения
+supply_throughput_mult_hostile_units_modifier;Вражеские армии
+supply_throughput_total_tooltip;Общая пропускная способность снабжения: ?Y$value$?W
+trade_centre_arbitrage;Арбитраж: ?Y$val$
+trade_centre_wealth;Общая стоимость запасов: ?Y$val$
+trade_centre_wealth_and_money;Общее богатство: ?Y$val$
+trade_route_base_distance;Базовое торговое расстояние: ?Y$val$?! км. Используется для оценки того, стоит ли соединять штаты торговым путём.
+trade_route_confidence_export;Достоверность цены экспорта: ?Y$val$
+trade_route_confidence_import;Достоверность цены импорта: ?Y$val$
+trade_route_local_average_population;Среднее население штата: ?Y$val$?! взрослых мужчин. Используется для оценки местного значения порта.
+trade_route_volume_budget_availability;Доступный импортный бюджет: ?Y$val$?W
+trade_route_volume_export_price;Цена экспорта (с учётом тарифа): ?Y$val$?W
+trade_route_volume_import_price;Цена импорта (с учётом тарифа): ?Y$val$?W
+trade_route_volume_risk;Рискованность торговли (зависит от отношения цены к доступным средствам): ?Y$val$?W
+trade_route_volume_transport_availability;Доступность перевозок: ?Y$val$?W
+trade_route_volume_transport_cost;Стоимость перевозки: ?Y$val$?W
+unit_current_reinforcement_land;За последний день эта часть получила ?Y$val$%?W необходимого пополнения.\nИз текущего расхода на пополнение мы могли бы получить:
+unit_current_reinforcement_naval;За последний день эта часть получила ?Y$val$%?W необходимого ремонта.\nИз текущего расхода на ремонт мы могли бы получить:
+unit_priority_tooltip_2;Увеличивайте приоритет ?Yлевым щелчком?W и уменьшайте ?Yправым?W
+unit_priority_tooltip_3;(Эта часть имеет ?Gвысокий?W приоритет, так как находится в бою)
+unit_supply_priority_high_tooltip_1;Эта часть сейчас имеет ?Gвысокий?W приоритет снабжения
+unit_supply_priority_low_tooltip_1;Эта часть сейчас имеет ?Rнизкий?W приоритет снабжения
+unit_supply_priority_normal_tooltip_1;Эта часть сейчас имеет ?Yсредний?W приоритет снабжения

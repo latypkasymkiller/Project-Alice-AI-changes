@@ -670,6 +670,9 @@
 	LUA_DEFINES_LIST_ELEMENT(alice_ai_threat_radius, -0.996000)                                                                    \
 	LUA_DEFINES_LIST_ELEMENT(alice_ai_threat_overestimate, 1.150000)                                                               \
 	LUA_DEFINES_LIST_ELEMENT(alice_ai_attack_target_radius, -0.996000)                                                             \
+/* Minimum predicted win probability, from the trained battle model, for the AI to assault a defended province. */                 \
+/* Targets the model expects to lose are skipped that day; 0 disables the check and restores the legacy behavior */                 \
+	LUA_DEFINES_LIST_ELEMENT(alice_ai_min_win_probability, 0.500000)                                                               \
 /* AI threat pressure field ("internal map"): armies project a weight that decays with distance, so the AI      */ \
 /* reacts to the mass of a threat rather than to its mere presence. 0 disables and restores the legacy behavior */ \
 	LUA_DEFINES_LIST_ELEMENT(alice_ai_use_pressure, 1.000000)                                                                      \
