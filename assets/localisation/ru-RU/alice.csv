@@ -1626,15 +1626,15 @@ alice_only_host_speed;Только хост может менять скорос
 alice_host_date;Дата хоста: $date$
 alice_budget_gold;Золотые шахты
 alice_budget_construction;Строительство
-alice_budget_army_upkeep;Содержание армии
-alice_budget_navy_upkeep;Содержание флота
-alice_budget_domestic_investment;Общественные работы
-alice_budget_debt_service;Обслуживание долга
-alice_budget_diplo_income;Дипломатические доходы
-alice_budget_diplo_expenses;Дипломатические расходы
+alice_budget_army_upkeep;Армия
+alice_budget_navy_upkeep;Флот
+alice_budget_domestic_investment;Инвестиции
+alice_budget_debt_service;Погашение
+alice_budget_diplo_income;Дипломатия
+alice_budget_diplo_expenses;Дипломатия
 alice_budget_taxes;Налоги
 alice_budget_indemnities;Репарации
-alice_budget_subjects;Доход от субъектов
+alice_budget_subjects;Субъекты
 alice_budget_item;Статья
 alice_budget_amount;Сумма
 alice_budget_minimum_button;Установить минимум
@@ -1643,7 +1643,7 @@ alice_budget_decrease_button;Уменьшить на 10
 alice_budget_increase_button;Увеличить на 10
 alice_budget_max;Макс. $x$
 alice_budget_min;Мин. $x$
-alice_budget_overlord;Налоги сюзерену
+alice_budget_overlord;Сюзерен
 alice_budget_expand_tt;Показать подробности
 alice_budget_contract_tt;Скрыть подробности
 alice_budget_admin_eff1;Админ.
@@ -1657,8 +1657,8 @@ alice_budget_debt;Долг
 alice_budget_total_debt;Итого долга:
 alice_budget_max_debt;Максимальный долг:
 alice_budget_debt_enable;Включить долги
-alice_budget_tariffs_import;Импортные пошлины
-alice_budget_tariffs_export;Экспортные пошлины
+alice_budget_tariffs_import;Пошлины ввоз
+alice_budget_tariffs_export;Пошлины вывоз
 alice_budget_overseas_maintanance;Колонии
 alice_budget_social_spending;Пособия
 tb_suppression_points;Очки подавления:
@@ -2025,9 +2025,9 @@ total_investments_label;Всего
 investment_efficiency_tooltip;Инструменты, товары эффективности и оборудование
 investment_expansion_tooltip;Расширение
 activated_by_tech;Открывается технологией ?Y$x$?!
-alice_budget_administration_expense;Жалование чиновникам
-alice_budget_education_expense;Народное образование
-alice_budget_military_expense;Жалование армии
+alice_budget_administration_expense;Бюрократия
+alice_budget_education_expense;Образование
+alice_budget_military_expense;Оборона
 alice_mvstatecap_1;Переносит столицу рынка и государственные запасы штата в эту провинцию
 alice_mvstatecap_2;Штат принадлежит нам
 alice_mvstatecap_3;Провинция не является столицей рынка
