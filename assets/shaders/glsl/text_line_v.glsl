@@ -38,9 +38,9 @@ void main() {
 	vec2 unadj_normal = vec2(-direction.y / 2.0f, direction.x);
 
 	vec4 center_point = calc_gl_position(vertex_position);
-	vec4 right_point = thickness * 10000 * (calc_gl_position(vertex_position + unadj_direction * 0.0001) - center_point);
+	vec4 right_point = thickness * 10000.f * (calc_gl_position(vertex_position + unadj_direction * 0.0001) - center_point);
 
-	vec4 top_point = thickness * 10000 * (calc_gl_position(vertex_position + unadj_normal * 0.0001) - center_point);
+	vec4 top_point = thickness * 10000.f * (calc_gl_position(vertex_position + unadj_normal * 0.0001) - center_point);
 
 	//vec2 offset = normal_vector + extend_vector;
 	//world_pos += offset * scale;

@@ -12,6 +12,11 @@
 #include "constants.hpp"
 #ifdef _WIN32
 #include <icu.h>
+#elif defined(__ANDROID__)
+#include <unicode/ubrk.h>
+#include <unicode/utypes.h>
+// unicode/ubidi.h nao existe no NDK -- ver icu_android_compat.hpp
+#include "icu_android_compat.hpp"
 #else
 #include <unicode/ubrk.h>
 #include <unicode/utypes.h>
@@ -441,6 +446,13 @@ void font_manager::change_locale(sys::state& state, dcon::locale_id l) {
 	}
 
 	{
+#ifdef __ANDROID__
+		// ubrk_getBinaryRules nao existe no NDK -- guarda [tipo][locale] pro
+		// ubrk_openBinaryRules() do icu_android_compat.hpp decodificar depois.
+		state.font_collection.compiled_ubrk_rules.clear();
+		state.font_collection.compiled_ubrk_rules.push_back(uint8_t(UBRK_LINE));
+		state.font_collection.compiled_ubrk_rules.insert(state.font_collection.compiled_ubrk_rules.end(), lang_str.begin(), lang_str.end());
+#else
 		UErrorCode errorCode = U_ZERO_ERROR;
 		UBreakIterator* lb_it = ubrk_open(UBreakIteratorType::UBRK_LINE, lang_str.c_str(), nullptr, 0, &errorCode);
 		if(!lb_it || !U_SUCCESS(errorCode)) {
@@ -455,8 +467,14 @@ void font_manager::change_locale(sys::state& state, dcon::locale_id l) {
 		ubrk_getBinaryRules(lb_it, state.font_collection.compiled_ubrk_rules.data(), rule_size, &errorCode);
 
 		ubrk_close(lb_it);
+#endif
 	}
 	{
+#ifdef __ANDROID__
+		state.font_collection.compiled_char_ubrk_rules.clear();
+		state.font_collection.compiled_char_ubrk_rules.push_back(uint8_t(UBRK_CHARACTER));
+		state.font_collection.compiled_char_ubrk_rules.insert(state.font_collection.compiled_char_ubrk_rules.end(), lang_str.begin(), lang_str.end());
+#else
 		UErrorCode errorCode = U_ZERO_ERROR;
 		UBreakIterator* ch_it = ubrk_open(UBreakIteratorType::UBRK_CHARACTER, lang_str.c_str(), nullptr, 0, &errorCode);
 		if(!ch_it || !U_SUCCESS(errorCode)) {
@@ -471,8 +489,14 @@ void font_manager::change_locale(sys::state& state, dcon::locale_id l) {
 		ubrk_getBinaryRules(ch_it, state.font_collection.compiled_char_ubrk_rules.data(), rule_size, &errorCode);
 
 		ubrk_close(ch_it);
+#endif
 	}
 	{
+#ifdef __ANDROID__
+		state.font_collection.compiled_word_ubrk_rules.clear();
+		state.font_collection.compiled_word_ubrk_rules.push_back(uint8_t(UBRK_WORD));
+		state.font_collection.compiled_word_ubrk_rules.insert(state.font_collection.compiled_word_ubrk_rules.end(), lang_str.begin(), lang_str.end());
+#else
 		UErrorCode errorCode = U_ZERO_ERROR;
 		UBreakIterator* ch_it = ubrk_open(UBreakIteratorType::UBRK_WORD, lang_str.c_str(), nullptr, 0, &errorCode);
 		if(!ch_it || !U_SUCCESS(errorCode)) {
@@ -487,6 +511,7 @@ void font_manager::change_locale(sys::state& state, dcon::locale_id l) {
 		ubrk_getBinaryRules(ch_it, state.font_collection.compiled_word_ubrk_rules.data(), rule_size, &errorCode);
 
 		ubrk_close(ch_it);
+#endif
 	}
 
 	state.load_locale_strings(localename_sv);

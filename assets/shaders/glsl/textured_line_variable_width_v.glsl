@@ -2,7 +2,7 @@
 layout (location = 0) in vec2 vertex_position;
 layout (location = 1) in vec2 normal_direction;
 layout (location = 2) in float texture_coord;
-layout (location = 3) in float distance;
+layout (location = 3) in float vertex_distance;
 layout (location = 4) in float width;
 
 out float tex_coord;
@@ -36,6 +36,6 @@ void main() {
 	space_coords = point_to_sphere(vertex_position);
 	gl_Position = temp;
 	tex_coord = texture_coord;
-	o_dist = - time + distance / (2.0f * 0.0005f);
+	o_dist = - time + vertex_distance / (2.0f * 0.0005f);
 	//map_coord = vertex_position;
 }

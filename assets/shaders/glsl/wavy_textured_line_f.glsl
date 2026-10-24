@@ -26,7 +26,7 @@ void main() {
 	vec2 prov_id = texture(provinces_texture_sampler, gl_FragCoord.xy / screen_size).xy;
 
 	if (ignore_light > 0.f) {
-		if (texture(provinces_sea_mask, prov_id).x > 0) {
+		if (texture(provinces_sea_mask, prov_id).x > 0.f) {
 			frag_color = vec4(0.0f, 0.0f, 0.0f, sin(o_dist * 2.f));
 		} else {
 			float rail = max(0.f, sin(railroad_level * o_dist * 2.f));
@@ -39,7 +39,7 @@ void main() {
 	float darkness = max(0.f, -dot(light_direction, space_coords) + 0.1f);
 
 	float texture_mask = texture(line_texture, vec2(o_dist, tex_coord)).r;
-	if (texture(provinces_sea_mask, prov_id).x > 0 || (prov_id.x == 0.f && prov_id.y == 0.f)) {
+	if (texture(provinces_sea_mask, prov_id).x > 0.f || (prov_id.x == 0.f && prov_id.y == 0.f)) {
 		discard;
 	}
 	//out_color.rgb *= texture(province_fow, prov_id).rgb;

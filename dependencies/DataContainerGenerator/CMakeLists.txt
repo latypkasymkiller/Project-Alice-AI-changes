@@ -13,6 +13,11 @@ FetchContent_MakeAvailable(DataContainer)
 add_library(dependency_DataContainer INTERFACE)
 target_include_directories(dependency_DataContainer SYSTEM INTERFACE "${datacontainer_SOURCE_DIR}/CommonIncludes/")
 
+if(CMAKE_CROSSCOMPILING)
+	# DCONGENERATOR roda durante o build (gera .hpp) -- nao dá pra compilá-lo
+	# com o toolchain do NDK. Ver cmake/AliceHostTools.cmake.
+	alice_import_host_tool(DCONGENERATOR)
+else()
 # CONTAINER GENERATOR
 file(GLOB_RECURSE DCONGENERATOR_SOURCE "${datacontainer_SOURCE_DIR}/DataContainerGenerator/*.cpp")
 
@@ -45,4 +50,5 @@ else() # GCC or CLANG
 									# -Wall -Wextra -Wpedantic -Werror
 		$<$<CONFIG:Debug>:			-g>
 		$<$<NOT:$<CONFIG:Debug>>: 	-O3>)
+endif()
 endif()

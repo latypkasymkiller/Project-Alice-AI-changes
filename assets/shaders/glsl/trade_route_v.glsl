@@ -2,7 +2,7 @@
 layout (location = 0) in vec2 vertex_position;
 layout (location = 1) in vec2 normal_direction;
 layout (location = 2) in float texture_coord;
-layout (location = 3) in float distance;
+layout (location = 3) in float vertex_distance;
 layout (location = 4) in float width;
 
 out float tex_coord;
@@ -36,7 +36,7 @@ void main() {
 
 	vec4 temp = calc_gl_position(world_pos);
 
-	float angle_x = 2 * vertex_position.x * PI;
+	float angle_x = 2.f * vertex_position.x * PI;
 	float x = cos(angle_x);
 	float y = sin(angle_x);
 	float angle_y = vertex_position.y * PI;
@@ -48,5 +48,5 @@ void main() {
 	gl_Position = temp;
 	tex_coord = texture_coord * adj_width;
 	width_factor = adj_width;
-	o_dist = -time + distance * 50.f;
+	o_dist = -time + vertex_distance * 50.f;
 }

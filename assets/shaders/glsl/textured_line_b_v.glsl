@@ -4,7 +4,7 @@ layout (location = 1) in vec2 prev_point;
 layout (location = 2) in vec2 next_point;
 layout (location = 3) in vec2 province_index;
 layout (location = 4) in float texture_coord;
-layout (location = 5) in float distance;
+layout (location = 5) in float vertex_distance;
 
 out float tex_coord;
 out float border_width_coord;
@@ -76,7 +76,7 @@ void main() {
 	// pass data to frag shader
 	tex_coord = texture_coord;
 	border_width_coord = abs(texture_coord);
-	o_dist = distance / (2.0f * width);
+	o_dist = vertex_distance / (2.0f * width);
 	map_coord = vertex_position + corner_shift;
 	space_coord = gl_Position.xy;
 	frag_province_index = province_index;

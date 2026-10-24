@@ -39,12 +39,10 @@ vec4 gamma_correct(vec4 colour) {
 
 // sheet is composed of 64 files, in 4 cubes of 4 rows of 4 columns
 // so each column has 8 tiles, and each row has 8 tiles too
-float xx = 1 / map_size.x;
-float yy = 1 / map_size.y;
-vec2 pix = vec2(xx, yy);
+#define pix (vec2(1.f) / map_size)
 
 vec2 get_corrected_coords(vec2 coords) {
-	coords.y -= (1 - 1 / 1.3) * 3 / 5;
+	coords.y -= (1.f - 1.f / 1.3) * 3.f / 5.f;
 	coords.y *= 1.3;
 	return coords;
 }
@@ -66,9 +64,9 @@ vec4 get_water_terrain()
 	vec2 tex_coord = tex_coord;
 	vec2 corrected_coord = get_corrected_coords(tex_coord);
 	vec3 WorldColorColor = texture(colormap_water, corrected_coord).rgb;
-	if(corrected_coord.y > 1)
+	if(corrected_coord.y > 1.f)
 		WorldColorColor = vec3(0.14, 0.23, 0.36);
-	if(corrected_coord.y < 0)
+	if(corrected_coord.y < 0.f)
 		WorldColorColor = vec3(0.20, 0.35, 0.43);
 	tex_coord *= 100.;
 	tex_coord = tex_coord * 0.25 + time * 0.002;
@@ -76,10 +74,10 @@ vec4 get_water_terrain()
 	const vec3 eyeDirection = vec3(0.0, 1.0, 1.0);
 	const vec3 lightDirection = vec3(0.0, 1.0, 1.0);
 
-	vec2 coordA = tex_coord * 3 + vec2(0.10, 0.10);
-	vec2 coordB = tex_coord * 1 + vec2(0.00, 0.10);
-	vec2 coordC = tex_coord * 2 + vec2(0.00, 0.15);
-	vec2 coordD = tex_coord * 5 + vec2(0.00, 0.30);
+	vec2 coordA = tex_coord * 3.f + vec2(0.10, 0.10);
+	vec2 coordB = tex_coord * 1.f + vec2(0.00, 0.10);
+	vec2 coordC = tex_coord * 2.f + vec2(0.00, 0.15);
+	vec2 coordD = tex_coord * 5.f + vec2(0.00, 0.30);
 
 	// Uses textureNoTile for non repeting textures,
 	// probably unnecessarily expensive
@@ -101,9 +99,9 @@ vec4 get_water_terrain()
 	);
 
 	vec3 eyeDir = normalize(eyeDirection);
-	float NdotL = max(dot(eyeDir, (vBumpTex / 2)), 0);
+	float NdotL = max(dot(eyeDir, (vBumpTex / 2.f)), 0.f);
 
-	NdotL = clamp((NdotL + WRAP) / (1 + WRAP), 0.f, 1.f);
+	NdotL = clamp((NdotL + WRAP) / (1.f + WRAP), 0.f, 1.f);
 	NdotL = mix(NdotL, 1.0, 0.0);
 
 	vec3 OutColor = NdotL * (WorldColorColor * vColorMapFactor);
@@ -141,7 +139,7 @@ vec4 get_terrain(vec2 corner, vec2 offset) {
 	vec4 province_sample = texture(provinces_texture_sampler, gl_FragCoord.xy / screen_size);
 	vec2 prov_id = province_sample.xy;
 	float index = texture(terrain_texture_sampler, floor(tex_coord * map_size + vec2(0.5, 0.5)) / map_size + 0.5 * pix * corner).r;
-	index = floor(index * 256);
+	index = floor(index * 256.f);
 
 	float is_water = 0.f; //step(64, index);
 
@@ -335,7 +333,7 @@ vec4 get_land_political_gores() {
 	//float total_weight = weight_base + weight_hatching + weight_border + weight_watercolor;
 	float wc_g = dot(wc.xyz, GREYIFY);
 
-	float final_weight = min(1, sqrt(
+	float final_weight = min(1.f, sqrt(
 		weight_base
 		+ wc_g * weight_watercolor
 		+ weight_border * (1.f - gradient)
@@ -368,9 +366,9 @@ vec4 get_land_political_close() {
 
 	vec2 rel_coord = tex_coord * map_size - floor(tex_coord * map_size) - vec2(0.5);
 	uint test = texture(diag_border_identifier, rounded_tex_coords).x;
-	int shift = int(sign(rel_coord.x) + 2 * sign(rel_coord.y) + 3);
+	int shift = int(sign(rel_coord.x) + 2.f * sign(rel_coord.y) + 3.f);
 
-	rounded_tex_coords.y += ((int(test >> shift) & 1) != 0) && (abs(rel_coord.x) + abs(rel_coord.y) > 0.5) ? sign(rel_coord.y) / map_size.y : 0;
+	rounded_tex_coords.y += ((int(test >> shift) & 1) != 0) && (abs(rel_coord.x) + abs(rel_coord.y) > 0.5) ? sign(rel_coord.y) / map_size.y : 0.f;
 
 	vec4 province_sample = texture(provinces_texture_sampler, gl_FragCoord.xy / screen_size);
 	vec2 prov_id = province_sample.xy;
@@ -467,7 +465,7 @@ vec4 get_land_political_far() {
 }
 
 vec4 get_land() {
-	if(subroutines_index_2 == 0) {
+	if(subroutines_index_2 == 0u) {
 		return get_land_terrain();
 	}
 

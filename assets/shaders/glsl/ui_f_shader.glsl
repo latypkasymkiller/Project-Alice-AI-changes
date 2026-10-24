@@ -65,7 +65,7 @@ vec4 progress_bar(vec2 tc) {
 vec4 frame_stretch(vec2 tc) {
 	float realx = tc.x * d_rect.z;
 	float realy = tc.y * d_rect.w;
-	vec2 tsize = textureSize(texture_sampler, 0);
+	vec2 tsize = vec2(textureSize(texture_sampler, 0));
 	float xout = 0.0;
 	float yout = 0.0;
 	if(realx <= border_size)
@@ -131,7 +131,7 @@ vec4 triangle_strip(vec2 tc) {
 
 	float distance_from_boundary = (0.5f - abs(tc.y - 0.5f)) * real_size / 50.f;
 
-	float gold_frame = max(0, 0.3f - distance_from_boundary) * 5.f;
+	float gold_frame = max(0.f, 0.3f - distance_from_boundary) * 5.f;
 	float shadow = min(1.f, distance_from_boundary * 2.f + 0.1f);
 	float fade = distance_from_boundary * 6.f;
 	gold_frame = gold_frame * gold_frame * gold_frame;

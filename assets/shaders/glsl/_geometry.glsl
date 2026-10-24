@@ -53,13 +53,13 @@ vec3 point_to_sphere(vec2 point) {
 	float psi = point.x * 2.f * PI;
 	float phi = (point.y - 0.5f) *PI;
 	return vec3(sin(phi), cos(phi) * cos(psi), cos(phi) * sin(psi));
-};
+}
 
 vec2 sphere_to_point(vec3 point) {
 	float psi = atan(point.z, point.y);
 	float phi = asin(point.x);
 	return vec2(psi / PI / 2.f, phi / PI + 0.5f);
-};
+}
 
 sphere_tangent tangent_to_sphere_tangent(square_tangent val) {
 	float psi = val.base.x * 2.f * PI;
@@ -70,7 +70,7 @@ sphere_tangent tangent_to_sphere_tangent(square_tangent val) {
 		vec3( cos(phi), -sin(phi) * cos(psi), -sin(phi) * sin(psi) )
 	); 
 	return sphere_tangent(base, differential* (vec2(2.f * PI, PI)* val.tangent));
-};
+}
 
 square_tangent sphere_tangent_to_tangent(sphere_tangent  val) {
 	float psi = atan(val.base.z, val.base.y);
@@ -89,7 +89,7 @@ square_tangent sphere_tangent_to_tangent(sphere_tangent  val) {
 			coordinate_up / PI
 		)
 	);
-};
+}
 
 square_tangent rotate_left_sphere(square_tangent tangent) {
 	sphere_tangent sphere = tangent_to_sphere_tangent(tangent);
@@ -157,15 +157,15 @@ vec4 sphere_to_ogl_perspective(vec3 p, mat3 rotation, float aspect_ratio, float 
 	float tangent_length_square = 1.2f * 1.2f - 1.f / PI / PI;
 	float far = tangent_length_square / 1.2f;
 
-	float right = near * tan(PI / 6) / zoom * aspect_ratio;
-	float top = near * tan(PI / 6) / zoom;
+	float right = near * tan(PI / 6.f) / zoom * aspect_ratio;
+	float top = near * tan(PI / 6.f) / zoom;
 
 	rotated_p.x *= near / right;
 	rotated_p.y *= near / top;
 
 	float w = -rotated_p.z;
 
-	rotated_p.z = -(far + near) / (far - near) * rotated_p.z - 2 * far * near / (far - near);
+	rotated_p.z = -(far + near) / (far - near) * rotated_p.z - 2.f * far * near / (far - near);
 
 	return vec4(rotated_p, w);
 }

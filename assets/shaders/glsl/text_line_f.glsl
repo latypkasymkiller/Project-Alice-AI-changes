@@ -13,14 +13,14 @@ vec4 gamma_correct(vec4 colour) {
 }
 
 
-float clamp(float x, float lowerlimit, float upperlimit) {
+float text_clamp(float x, float lowerlimit, float upperlimit) {
   if (x < lowerlimit) return lowerlimit;
   if (x > upperlimit) return upperlimit;
   return x;
 }
 
-float smoothstep (float edge0, float edge1, float x) {
-   x = clamp((x - edge0) / (edge1 - edge0), 0.1f, 1.f);
+float text_smoothstep(float edge0, float edge1, float x) {
+   x = text_clamp((x - edge0) / (edge1 - edge0), 0.1f, 1.f);
 
    return x * x * (3.0f - 2.0f * x);
 }
@@ -31,7 +31,7 @@ float get_value(float d) {
     if (d > 0.5f) {
         return 0.f;
     } else if ((d > 0.500f) && (d < 0.510f)) {
-        value = 1.f - smoothstep(0.500f, 0.510f, d);
+        value = 1.f - text_smoothstep(0.500f, 0.510f, d);
     } else {
         value = 1.f;
     }
@@ -58,12 +58,12 @@ void main() {
     
     float average_value = 0.f;
     for (int i = -5; i <= 5; i++) {
-        average_value += get_value(dist + i * pixel_distance);
+        average_value += get_value(dist + float(i) * pixel_distance);
     }
     
     float average_opacity = 0.f;
     for (int i = -5; i <= 5; i++) {
-        average_opacity += get_opacity(dist + i * pixel_distance);
+        average_opacity += get_opacity(dist + float(i) * pixel_distance);
     }
     
     average_value /= 11.f;

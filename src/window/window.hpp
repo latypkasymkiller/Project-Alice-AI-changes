@@ -64,6 +64,74 @@ public:
 	bool left_mouse_down = false;
 };
 } // namespace window
+#elif defined(__ANDROID__)
+struct ANativeWindow;
+struct android_app;
+typedef void* EGLDisplay;
+typedef void* EGLSurface;
+typedef void* EGLContext;
+typedef void* EGLConfig;
+
+namespace window {
+class window_data_impl {
+public:
+	win32_text_services text_services;
+	// ver window_android.cpp: o contexto EGL vive enquanto o app existir; a
+	// superficie (ANativeWindow) e criada/destruida a cada APP_CMD_INIT_WINDOW /
+	// APP_CMD_TERM_WINDOW (app em segundo plano, tela desligada etc.)
+	android_app* app = nullptr;
+	ANativeWindow* native_window = nullptr;
+	EGLDisplay egl_display = nullptr;
+	EGLConfig egl_config = nullptr;
+	EGLSurface egl_surface = nullptr;
+	EGLContext egl_context = nullptr;
+
+	int32_t creation_x_size = 600;
+	int32_t creation_y_size = 400;
+
+	bool in_fullscreen = true; // sempre fullscreen em Android
+	bool left_mouse_down = false;
+
+	bool resumed = false;      // entre APP_CMD_RESUME e APP_CMD_PAUSE
+	bool has_focus = false;    // entre APP_CMD_GAINED_FOCUS e APP_CMD_LOST_FOCUS
+	bool game_started = false; // android_start_game ja rodou (on_create etc.)
+	bool loading = false;      // cenario sendo carregado/montado (tela de espera)
+	bool first_run_defaults = false; // sem user_settings.dat: escala da interface pela tela, MSAA desligado
+
+	// Renderizacao em resolucao reduzida: o jogo desenha em render_width x
+	// render_height e o hardware de video do aparelho amplia para a tela
+	// (ANativeWindow_setBuffersGeometry), sem custo para a GPU. O shader do mapa
+	// e pesado (dezenas de leituras de textura por pixel) e a tela de um celular
+	// tem 2-3 milhoes de pixels; 0,75 desenha ~44% menos pixels.
+	float render_scale = 0.75f;
+	int32_t physical_width = 0, physical_height = 0; // pixels da tela (coordenadas do toque)
+	int32_t render_width = 0, render_height = 0;     // pixels desenhados (coordenadas do jogo)
+	std::chrono::steady_clock::time_point last_background_save{};
+};
+
+// Escala da interface para uma tela de width x height pixels com a densidade
+// dada (dpi do Android, 160 = 1x). Fica entre os valores de sys::ui_scales.
+float android_default_ui_scale(int32_t width, int32_t height, int32_t density_dpi);
+
+// Ponto de entrada do loop principal no Android, chamado pelo android_main
+// (entry_point_android.cpp). So retorna quando o app e destruido.
+void run_android_main_loop(sys::state& game_state, android_app* app);
+
+// Implementado em entry_point_android.cpp: chamado a cada volta do loop
+// principal (com ou sem superficie) para avancar a extracao dos arquivos,
+// a escolha da pasta do jogo e o carregamento do cenario.
+void android_launcher_update(sys::state& game_state);
+
+// Implementado em entry_point_android.cpp: abre (mensagem) ou fecha ("") a
+// janela de carregamento da AliceActivity. Pode ser chamado de qualquer thread.
+void android_set_loading(char const* message);
+// contador de desempenho (toque de tres dedos); vazio esconde
+void android_set_stats(char const* text);
+
+// Com o cenario carregado e uma superficie EGL ativa: inicia OpenGL, som e o
+// on_create (o final do create_window de window_nix.cpp).
+void android_start_game(sys::state& game_state);
+} // namespace window
 #else
 struct GLFWwindow;
 

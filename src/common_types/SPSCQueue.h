@@ -207,7 +207,9 @@ public:
   RIGTORP_NODISCARD size_t capacity() const noexcept { return capacity_ - 1; }
 
 private:
-#ifdef __cpp_lib_hardware_interference_size
+#if defined(__cpp_lib_hardware_interference_size) && !defined(__ANDROID__)
+  // no aarch64 o clang reporta 256 aqui, o que forca sys::state (alignas(64))
+  // a ter alinhamento 256 e quebra a compilacao; ARM de celular usa linha de 64
   static constexpr size_t kCacheLineSize =
       std::hardware_destructive_interference_size;
 #else

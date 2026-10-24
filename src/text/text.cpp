@@ -8,6 +8,11 @@
 #include <type_traits>
 #ifdef _WIN32
 #include <icu.h>
+#elif defined(__ANDROID__)
+#include <unicode/ubrk.h>
+#include <unicode/utypes.h>
+// unicode/ubidi.h nao existe no NDK -- ver icu_android_compat.hpp
+#include "icu_android_compat.hpp"
 #else
 #include <unicode/ubrk.h>
 #include <unicode/utypes.h>

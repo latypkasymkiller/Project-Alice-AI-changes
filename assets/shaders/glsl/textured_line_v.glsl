@@ -2,7 +2,7 @@
 layout (location = 0) in vec2 vertex_position;
 layout (location = 1) in vec2 normal_direction;
 layout (location = 2) in float texture_coord;
-layout (location = 3) in float distance;
+layout (location = 3) in float vertex_distance;
 
 out float tex_coord;
 out float o_dist;
@@ -35,6 +35,6 @@ void main() {
 	map_coord = world_pos;
 	gl_Position = calc_gl_position(world_pos);
 	tex_coord = texture_coord;
-	o_dist = time + distance / (2.0f * width);
+	o_dist = time + vertex_distance / (2.0f * width);
 	map_coord = vertex_position;
 }

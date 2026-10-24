@@ -58,11 +58,11 @@ Curve loadBoldCurve(int index) {
 }
 
 float computeCoverage_real(float inverseDiameter, vec2 p0, vec2 p1, vec2 p2) {
-	if (p0.y > 0 && p1.y > 0 && p2.y > 0) return 0.0;
-	if (p0.y < 0 && p1.y < 0 && p2.y < 0) return 0.0;
+	if (p0.y > 0.f && p1.y > 0.f && p2.y > 0.f) return 0.0;
+	if (p0.y < 0.f && p1.y < 0.f && p2.y < 0.f) return 0.0;
 
 	// Note: Simplified from abc formula by extracting a factor of (-2) from b.
-	vec2 a = p0 - 2*p1 + p2;
+	vec2 a = p0 - 2.f*p1 + p2;
 	vec2 b = p0 - p1;
 	vec2 c = p0;
 
@@ -70,7 +70,7 @@ float computeCoverage_real(float inverseDiameter, vec2 p0, vec2 p1, vec2 p2) {
 	if (abs(a.y) >= 1e-5) {
 		// Quadratic segment, solve abc formula to find roots.
 		float radicand = b.y*b.y - a.y*c.y;
-		if (radicand <= 0) return 0.0;
+		if (radicand <= 0.f) return 0.0;
 	
 		float s = sqrt(radicand);
 		t0 = (b.y - s) / a.y;
@@ -91,27 +91,27 @@ float computeCoverage_real(float inverseDiameter, vec2 p0, vec2 p1, vec2 p2) {
 		}
 	}
 
-	float alpha = 0;
+	float alpha = 0.f;
 
-	if (t0 >= 0 && t0 < 1) {
+	if (t0 >= 0.f && t0 < 1.f) {
 		float x = (a.x*t0 - 2.0*b.x)*t0 + c.x;
-		alpha += clamp(x * inverseDiameter + 0.5, 0, 1);
+		alpha += clamp(x * inverseDiameter + 0.5, 0.f, 1.f);
 	}
 
-	if (t1 >= 0 && t1 < 1) {
+	if (t1 >= 0.f && t1 < 1.f) {
 		float x = (a.x*t1 - 2.0*b.x)*t1 + c.x;
-		alpha -= clamp(x * inverseDiameter + 0.5, 0, 1);
+		alpha -= clamp(x * inverseDiameter + 0.5, 0.f, 1.f);
 	}
 
 	return alpha;
 }
 
 float computeCoverage(float inverseDiameter, vec2 p0, vec2 p1, vec2 p2) {
-	if (p0.y > 0 && p1.y > 0 && p2.y > 0) return 0.0;
-	if (p0.y < 0 && p1.y < 0 && p2.y < 0) return 0.0;
+	if (p0.y > 0.f && p1.y > 0.f && p2.y > 0.f) return 0.0;
+	if (p0.y < 0.f && p1.y < 0.f && p2.y < 0.f) return 0.0;
 
 	// Note: Simplified from abc formula by extracting a factor of (-2) from b.
-	vec2 a = p0 - 2*p1 + p2;
+	vec2 a = p0 - 2.f*p1 + p2;
 	vec2 b = p0 - p1;
 	vec2 c = p0;
 
@@ -132,16 +132,16 @@ float computeCoverage(float inverseDiameter, vec2 p0, vec2 p1, vec2 p2) {
 	}
 	
 
-	float alpha = 0;
+	float alpha = 0.f;
 	
-	if (t0 >= 0 && t0 < 1) {
+	if (t0 >= 0.f && t0 < 1.f) {
 		float x = (a.x*t0 - 2.0*b.x)*t0 + c.x;
-		alpha += clamp(x * inverseDiameter + 0.5, 0, 1);
+		alpha += clamp(x * inverseDiameter + 0.5, 0.f, 1.f);
 		}
 
-	if (t1 >= 0 && t1 < 1) {
+	if (t1 >= 0.f && t1 < 1.f) {
 		float x = (a.x*t1 - 2.0*b.x)*t1 + c.x;
-		alpha -= clamp(x * inverseDiameter + 0.5, 0, 1);
+		alpha -= clamp(x * inverseDiameter + 0.5, 0.f, 1.f);
 		}
 
 	return alpha;

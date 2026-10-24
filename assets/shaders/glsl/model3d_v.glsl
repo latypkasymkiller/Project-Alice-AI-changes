@@ -18,7 +18,7 @@ uniform uint subroutines_index;
 
 vec4 globe_coords(vec3 world_pos) {
     vec3 new_world_pos;
-    float angle_x = 2 * world_pos.x * PI;
+    float angle_x = 2.f * world_pos.x * PI;
     new_world_pos.x = cos(angle_x);
     new_world_pos.y = sin(angle_x);
 
@@ -28,9 +28,9 @@ vec4 globe_coords(vec3 world_pos) {
     new_world_pos.z = cos(angle_y);
     new_world_pos = rotation * new_world_pos;
     new_world_pos /= PI;         // Will make the zoom be the same for the globe and flat map
-    new_world_pos *= (1 + world_pos.y);
+    new_world_pos *= (1.f + world_pos.y);
     new_world_pos.y *= 0.02;     // Sqeeze the z coords. Needs to be between -1 and 1
-    new_world_pos.xz *= -1;     // Invert the globe
+    new_world_pos.xz *= -1.f;     // Invert the globe
     new_world_pos.xyz += 0.5;     // Move the globe to the center
     return vec4(
         (2.f * new_world_pos.x - 1.f) / aspect_ratio  * zoom,

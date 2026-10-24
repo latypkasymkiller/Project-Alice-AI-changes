@@ -54,6 +54,9 @@ if(WIN32)
 else() # GCC or CLANG
 	target_compile_options(tbb PRIVATE
 		$<$<CONFIG:Debug>:			-fexceptions>
-		$<$<NOT:$<CONFIG:Debug>>: 	-fexceptions>
-                -mwaitpkg)
+		$<$<NOT:$<CONFIG:Debug>>: 	-fexceptions>)
+	if(NOT ANDROID)
+		# -mwaitpkg e uma extensao x86 (instrucoes umwait/tpause) -- nao existe em ARM
+		target_compile_options(tbb PRIVATE -mwaitpkg)
+	endif()
 endif()

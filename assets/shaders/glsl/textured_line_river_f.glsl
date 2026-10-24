@@ -23,7 +23,7 @@ vec4 gamma_correct(vec4 colour) {
 void main() {
 	vec4 out_color = texture(colormap_water, map_coord) * texture(line_texture, vec2(tex_coord, o_dist));
     vec2 prov_id = texture(provinces_texture_sampler, gl_FragCoord.xy / screen_size).xy;
-    if (texture(provinces_sea_mask, prov_id).x > 0 || (prov_id.x == 0.f && prov_id.y == 0.f)) {
+    if (texture(provinces_sea_mask, prov_id).x > 0.f || (prov_id.x == 0.f && prov_id.y == 0.f)) {
         discard;
     }
     float is_sea = texture(provinces_sea_mask, prov_id).x * 1000.f;
