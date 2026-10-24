@@ -358,6 +358,9 @@ void handle_cmd(android_app* app, int32_t cmd) {
 constexpr auto long_press_time = std::chrono::milliseconds(500);
 constexpr float touch_slop_dp = 10.f;	// quanto o dedo pode mexer e ainda ser toque/segurar
 constexpr float wheel_clicks_per_doubling = 3.f; // pinca: dobrar a distancia = 3 "cliques" da roda
+// rolagem de UI: quantos pixels de arrasto com dois dedos equivalem a "um clique"
+// da roda do mouse (aproximadamente uma linha/lista por cliques)
+constexpr float ui_scroll_px_per_click = 56.f;
 
 struct touch_tracker {
 	enum class mode : uint8_t {
@@ -365,7 +368,8 @@ struct touch_tracker {
 		pending,         // dedo encostou; ainda nao se sabe se e toque, segurar ou arrasto
 		left_drag,       // arrasto na interface (botao esquerdo)
 		map_pan,         // arrasto no mapa (botao do meio)
-		pinch,           // dois dedos
+		pinch,           // dois dedos no mapa
+		ui_scroll,       // dois dedos sobre a interface (rola listas, sem roda de mouse no celular)
 		ignore_until_up  // gesto ja consumido; espera todos os dedos sairem
 	};
 	mode current = mode::none;
@@ -373,6 +377,8 @@ struct touch_tracker {
 	float start_x = 0.f, start_y = 0.f;
 	float last_x = 0.f, last_y = 0.f;
 	float pinch_last_distance = 0.f;
+	float scroll_last_mid_y = 0.f; // coordenada Y do ponto medio em pixels do jogo
+	float scroll_accumulator = 0.f; // fracao de "cliques" da roda acumulados
 	std::chrono::steady_clock::time_point down_time;
 
 	// so para o feedback visual enquanto o jogo nao esta carregado
@@ -576,6 +582,80 @@ void update_perf_counter(sys::state& state) {
 	perf.start_date = date;
 }
 
+// ---------------------------------------------------------------------------
+// reposicionando janelas que ficariam fora da tela
+// ---------------------------------------------------------------------------
+
+// Ajeita a posicao de uma janela de topo para ela caber na viewport virtual do
+// pai (a cena inteira). O upstream deixa um "TODO move windows" no fim do
+// update_ui_scale: sem isso, subir a escala da interface empurra janelas
+// ancoradas por posicao fixa fora dos bordos e deixa botoes inalcansaveis --
+// em telas pequenas de celular isso mata a jogabilidade
+static void clamp_window_position(ui::element_base& root, ui::element_base& win) {
+	int32_t const pw = root.base_data.size.x;
+	int32_t const ph = root.base_data.size.y;
+	int32_t const w = win.base_data.size.x;
+	int32_t const h = win.base_data.size.y;
+	if(pw <= 0 || ph <= 0 || w <= 0 || h <= 0)
+		return;
+	int32_t const max_x = std::max(0, pw - w);
+	int32_t const max_y = std::max(0, ph - h);
+	ui::orientation const o = win.base_data.get_orientation();
+	switch(o) { // eixo Y (ver child_relative_location_y_component em gui_graphics.cpp)
+		case ui::orientation::lower_left:
+		case ui::orientation::lower_right:
+			win.base_data.position.y = int16_t(std::clamp(int32_t(ph) + int32_t(win.base_data.position.y), 0, max_y) - int32_t(ph));
+			break;
+		case ui::orientation::lower_center:
+		case ui::orientation::center:
+			win.base_data.position.y = int16_t(std::clamp(int32_t(ph) / 2 + int32_t(win.base_data.position.y), 0, max_y) - int32_t(ph) / 2);
+			break;
+		default: // upper_left, upper_right, upper_center
+			win.base_data.position.y = int16_t(std::clamp(int32_t(win.base_data.position.y), 0, max_y));
+			break;
+	}
+	switch(o) { // eixo X (ver child_relative_non_mirror_location em gui_graphics.cpp)
+		case ui::orientation::upper_right:
+		case ui::orientation::lower_right:
+			win.base_data.position.x = int16_t(std::clamp(int32_t(pw) + int32_t(win.base_data.position.x), 0, max_x) - int32_t(pw));
+			break;
+		case ui::orientation::upper_center:
+		case ui::orientation::lower_center:
+		case ui::orientation::center:
+			win.base_data.position.x = int16_t(std::clamp(int32_t(pw) / 2 + int32_t(win.base_data.position.x), 0, max_x) - int32_t(pw) / 2);
+			break;
+		default: // upper_left, lower_left
+			win.base_data.position.x = int16_t(std::clamp(int32_t(win.base_data.position.x), 0, max_x));
+			break;
+	}
+}
+
+// Percorre as janelas de topo das cenas de janelas comuns e recoloca as que
+// sairiam da tela. Roda todo quadro, antes do render: assim cobre a abertura
+// de novas janelas e as mudancas de escala da interface sem um espelhamento
+// em cada lugar. As outras raizes (rgos_root, province_details_root,
+// military_root, army_group_*) guardam icones ancorados a provinces no mapa
+// -- mudar a posicao delas quebra o desenho dos icones.
+static void clamp_windows_into_screen(sys::state& state) {
+	ui::element_base* const window_scenes[] = {
+		state.ui_state.root.get(),
+		state.ui_state.nation_picker.get(),
+		state.ui_state.end_screen.get(),
+	};
+	for(auto* scene : window_scenes) {
+		if(!scene)
+			continue;
+		for(int32_t index = 0;; ++index) {
+			auto* child = scene->get_child_by_index(state, index);
+			if(!child)
+				break;
+			if(!child->is_visible())
+				continue;
+			clamp_window_position(*scene, *child);
+		}
+	}
+}
+
 int32_t handle_touch(android_app* app, sys::state& state, AInputEvent* event) {
 	int32_t const action = AMotionEvent_getAction(event);
 	int32_t const masked = action & AMOTION_EVENT_ACTION_MASK;
@@ -605,8 +685,16 @@ int32_t handle_touch(android_app* app, sys::state& state, AInputEvent* event) {
 			touch.last_x = mid_x;
 			touch.last_y = mid_y;
 			game_mouse_move(state, int32_t(mid_x), int32_t(mid_y), mod);
-			game_mbutton(state, int32_t(mid_x), int32_t(mid_y), true, mod); // arrastar o mapa pelo ponto medio
-			touch.current = touch_tracker::mode::pinch;
+			if(touch_is_over_ui(state)) {
+				// dois dedos sobre a interface = rolar (equivale a roda do mouse);
+				// sem isso, listas compridas nao rolam em tela de toque
+				touch.scroll_last_mid_y = mid_y;
+				touch.scroll_accumulator = 0.f;
+				touch.current = touch_tracker::mode::ui_scroll;
+			} else {
+				game_mbutton(state, int32_t(mid_x), int32_t(mid_y), true, mod); // arrastar o mapa pelo ponto medio
+				touch.current = touch_tracker::mode::pinch;
+			}
 		}
 		break;
 	}
@@ -623,6 +711,30 @@ int32_t handle_touch(android_app* app, sys::state& state, AInputEvent* event) {
 			if(std::abs(clicks) > 0.01f) {
 				game_wheel(state, int32_t(mid_x), int32_t(mid_y), clicks, mod);
 				touch.pinch_last_distance = distance;
+			}
+			break;
+		}
+		if(touch.current == touch_tracker::mode::ui_scroll) {
+			if(AMotionEvent_getPointerCount(event) < 2)
+				break;
+			float mid_x, mid_y, distance;
+			pinch_geometry(event, mid_x, mid_y, distance);
+			touch.last_x = mid_x;
+			touch.last_y = mid_y;
+			game_mouse_move(state, int32_t(mid_x), int32_t(mid_y), mod);
+			// deslocamento vertical do ponto medio, em pixels virtuais do jogo
+			float const dy = (touch.scroll_last_mid_y - mid_y) / std::max(0.01f, state.user_settings.ui_scale);
+			touch.scroll_last_mid_y = mid_y;
+			if(dy != 0.f) {
+				// dedo subindo = ver conteudo mais abaixo (girar a roda para "baixo").
+				// Emite so cliques inteiros: nas janelas paginadas cada clique viraria
+				// uma pagina, e eventos fracionarios a 60 Hz as virariam varias vezes
+				touch.scroll_accumulator -= dy / ui_scroll_px_per_click;
+				float const clicks = std::truncf(touch.scroll_accumulator);
+				if(clicks != 0.f) {
+					touch.scroll_accumulator -= clicks;
+					game_wheel(state, int32_t(mid_x), int32_t(mid_y), clicks, mod);
+				}
 			}
 			break;
 		}
@@ -654,8 +766,8 @@ int32_t handle_touch(android_app* app, sys::state& state, AInputEvent* event) {
 		break;
 	}
 	case AMOTION_EVENT_ACTION_POINTER_UP: {
-		if(touch.current == touch_tracker::mode::pinch) {
-			// saiu um dos dedos: termina a pinca e ignora o dedo restante
+		if(touch.current == touch_tracker::mode::pinch || touch.current == touch_tracker::mode::ui_scroll) {
+			// saiu um dos dedos: termina o gesto e ignora o dedo restante
 			// (senao ele viraria um toque/arrasto acidental)
 			end_single_finger_gesture(state);
 			touch.current = touch_tracker::mode::ignore_until_up;
@@ -1021,6 +1133,7 @@ void run_android_main_loop(sys::state& game_state, android_app* app) {
 
 		if(can_render(win)) {
 			update_touch(game_state);
+			clamp_windows_into_screen(game_state);
 			render_frame(game_state);
 			update_perf_counter(game_state);
 		}
