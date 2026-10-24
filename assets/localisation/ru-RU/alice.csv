@@ -1624,8 +1624,8 @@ alice_factory_type_tab;Типы фабрик
 alice_player_date_sync;Игрок $name$ ($country$), дата: $date$
 alice_only_host_speed;Только хост может менять скорость
 alice_host_date;Дата хоста: $date$
-alice_budget_gold;Золотые шахты
-alice_budget_construction;Строительство
+alice_budget_gold;Золото
+alice_budget_construction;Стройка
 alice_budget_army_upkeep;Армия
 alice_budget_navy_upkeep;Флот
 alice_budget_domestic_investment;Инвестиции
@@ -1657,8 +1657,8 @@ alice_budget_debt;Долг
 alice_budget_total_debt;Итого долга:
 alice_budget_max_debt;Максимальный долг:
 alice_budget_debt_enable;Включить долги
-alice_budget_tariffs_import;Пошлины ввоз
-alice_budget_tariffs_export;Пошлины вывоз
+alice_budget_tariffs_import;Ввоз
+alice_budget_tariffs_export;Вывоз
 alice_budget_overseas_maintanance;Колонии
 alice_budget_social_spending;Пособия
 tb_suppression_points;Очки подавления:
