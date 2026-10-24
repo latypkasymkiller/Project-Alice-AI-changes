@@ -1,0 +1,192 @@
+name: Android port - build do APK (arm64-v8a)
+
+# Rodar manualmente pela aba "Actions" do GitHub (botão "Run workflow").
+# Não roda em todo push de propósito -- essa etapa é iterativa (compilar, ver erro,
+# corrigir, repetir), não faz sentido disparar em todo commit ainda.
+on:
+  workflow_dispatch:
+    inputs:
+      preset:
+        description: "release = otimizado, para jogar; debug = com assercoes e simbolos, para investigar erros"
+        type: choice
+        default: android-arm64-release
+        options:
+          - android-arm64-release
+          - android-arm64
+      release_tag:
+        description: "Tag do release (ex.: v0.3). Vazio = so gera o artefato; preenchido = publica um release no GitHub com o APK"
+        type: string
+        default: ""
+      release_sem_chave:
+        description: "Publicar o release mesmo sem a chave fixa (o APK nao instala por cima do anterior)"
+        type: boolean
+        default: false
+
+env:
+  # r29 (clang/libc++ 21): o r27 (libc++ 18) nao tem std::atomic_ref nem
+  # std::from_chars para float, que o DataContainer e o fif.hpp usam.
+  NDK_VERSION: r29
+  ANDROID_PLATFORM: "30" # Android 11 (os presets android-arm64* usam o mesmo valor)
+  PRESET: ${{ inputs.preset || 'android-arm64-release' }}
+
+jobs:
+  android-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # criar o release/tag quando release_tag for preenchido
+    steps:
+      - uses: actions/checkout@v4
+
+      # Chave fixa de assinatura (segredos do repositorio). Com ela o APK novo
+      # instala por cima do anterior. Release sem a chave falha logo aqui, antes
+      # da compilacao, para nao publicar um APK que nao atualiza o instalado.
+      - name: Preparar a chave de assinatura
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_SEM_CHAVE: ${{ inputs.release_sem_chave }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | tr -d '\r\n ' | base64 -d > "$RUNNER_TEMP/alice-release.p12"
+            echo "ALICE_KEYSTORE=$RUNNER_TEMP/alice-release.p12" >> "$GITHUB_ENV"
+            echo "Chave fixa encontrada."
+          elif [ -n "$RELEASE_TAG" ] && [ "$RELEASE_SEM_CHAVE" != "true" ]; then
+            echo "::error::Faltam os segredos ANDROID_KEYSTORE_BASE64 e ANDROID_KEYSTORE_PASSWORD (ver android/README.md, Assinatura). Para publicar mesmo assim, marque release_sem_chave."
+            exit 1
+          else
+            echo "::warning::Sem a chave fixa: o APK sai com uma chave de debug nova e nao instala por cima de outro."
+          fi
+
+      # Dependências de sistema exigidas só para o CONFIGURE do preset desktop passar
+      # (GLFW/GLEW checam X11/OpenGL na hora de configurar, mesmo que a gente só vá
+      # compilar as 5 ferramentas de geração de código com esse preset, não o jogo todo).
+      - name: Instalar dependências de sistema (build desktop)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build clang \
+            libgl1-mesa-dev libglvnd-dev libx11-dev libxrandr-dev \
+            libxinerama-dev libxcursor-dev libxi-dev
+
+      - name: Cache do build desktop (ferramentas de host)
+        uses: actions/cache@v4
+        with:
+          path: out/build/x64-debug-linux-clang
+          key: host-tools-${{ runner.os }}-${{ hashFiles('dependencies/**/CMakeLists.txt', 'CMakeLists.txt', 'CMakePresets.json') }}
+          restore-keys: |
+            host-tools-${{ runner.os }}-
+
+      - name: Validar os shaders (GLSL ES 3.20 e GLSL 4.60)
+        run: |
+          sudo apt-get install -y -qq glslang-tools
+          android/validate-shaders.sh
+
+      - name: Configurar preset desktop
+        run: cmake --preset x64-debug-linux-clang
+
+      - name: Compilar as 5 ferramentas de geração de código
+        run: |
+          cmake --build out/build/x64-debug-linux-clang --target \
+            ParserGenerator DCONGENERATOR DCONINTERFACEGEN DataContainer-Lua DataContainer_OOS_Reporter \
+            -- -j$(nproc)
+
+      - name: Reunir as ferramentas numa pasta única
+        run: |
+          mkdir -p native-tools
+          find out/build/x64-debug-linux-clang -type f \
+            \( -name ParserGenerator -o -name DCONGENERATOR -o -name DCONINTERFACEGEN \
+               -o -name DataContainer-Lua -o -name DataContainer_OOS_Reporter \) \
+            -exec cp {} native-tools/ \;
+          echo "Ferramentas encontradas:"
+          ls -la native-tools/
+
+      - name: Instalar o NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          # sem local-cache: o NDK restaurado do cache veio sem o clang++ (que e
+          # um link simbolico) e o configure falhou; baixar leva poucos segundos
+          local-cache: false
+
+      - name: Cache do build Android
+        uses: actions/cache@v4
+        with:
+          path: out/build/${{ env.PRESET }}
+          key: android-build-v3-${{ env.PRESET }}-${{ runner.os }}-${{ env.NDK_VERSION }}-${{ hashFiles('dependencies/**/CMakeLists.txt', 'CMakeLists.txt', 'CMakePresets.json') }}
+          restore-keys: |
+            android-build-v3-${{ env.PRESET }}-${{ runner.os }}-${{ env.NDK_VERSION }}-
+
+      - name: Configurar preset Android
+        env:
+          ANDROID_NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          cmake --preset "$PRESET" -DALICE_NATIVE_TOOLS_DIR="${{ github.workspace }}/native-tools"
+
+      # -k0 (keep going) para o ninja não parar no primeiro erro -- assim um único
+      # run já traz vários erros de uma vez pra corrigir, em vez de um por rodada.
+      - name: Compilar para Android (arm64-v8a)
+        env:
+          ANDROID_NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          set +e
+          # -j2: no release o main.cpp sozinho usa ~7 GB de memoria no compilador
+          cmake --build "out/build/$PRESET" --target Alice -- -k0 -j2 2>&1 | tee android-build.log
+          exit ${PIPESTATUS[0]}
+
+      - name: Copiar as .so para o projeto Gradle
+        env:
+          ANDROID_NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: android/collect-native-libs.sh "out/build/$PRESET"
+
+      - name: Instalar o JDK 17 (Android Gradle Plugin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # o Android SDK ja vem instalado no runner ubuntu-latest (ANDROID_HOME)
+      - name: Gerar o APK
+        working-directory: android
+        env:
+          ALICE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Conferir a assinatura do APK
+        run: |
+          APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk > apk-certs.txt
+          # o formato da linha muda entre versoes do apksigner; sem casar, mostra tudo
+          grep -E "certificate (DN|SHA-256 digest)" apk-certs.txt || cat apk-certs.txt
+
+      - name: Publicar o APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProjectAlice-arm64-v8a-${{ env.PRESET }}-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
+
+      # nome fixo: o README aponta para .../releases/latest/download/ProjectAlice-Android-arm64.apk,
+      # que sempre baixa o APK do release mais recente
+      - name: Preparar o APK para o release
+        if: ${{ inputs.release_tag != '' }}
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk ProjectAlice-Android-arm64.apk
+
+      - name: Publicar o release no GitHub
+        if: ${{ inputs.release_tag != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          target_commitish: ${{ github.sha }}
+          name: Project Alice Android ${{ inputs.release_tag }}
+          body_path: android/release-notes.md
+          # release normal (nao pre-release): o link "releases/latest" ignora pre-releases
+          make_latest: true
+          files: ProjectAlice-Android-arm64.apk
+
+      - name: Publicar o log do build (sempre, mesmo se falhar)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build-log
+          path: android-build.log
+          retention-days: 14
