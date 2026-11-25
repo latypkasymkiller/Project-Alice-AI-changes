@@ -3798,28 +3798,28 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 				auto& st = ready_stacks[chosen_indices[0]];
 				bool already_adj = (st.loc == staging_prov) || province::provinces_are_adjacent(state, st.loc, target_p);
 				if(already_adj) {
-					if(auto path = province::make_land_unit_path(state, st.loc, target_p, n, st.id); !path.empty()) {
+					if(auto direct_path = province::make_land_unit_path(state, st.loc, target_p, n, st.id); !direct_path.empty()) {
 						state.world.army_set_special_order(st.id, uint8_t(military::special_army_order::none));
-						military::set_army_path(state, st.id, path, n);
+						military::set_army_path(state, st.id, direct_path, n);
 						state.world.army_set_ai_province(st.id, target_p);
 						state.world.army_set_ai_activity(st.id, uint8_t(army_activity::attack_gathered));
 						st.assigned = true;
 						pin_tracker.commit_pull(st.loc, st.regs);
 						issued_any = true;
 					}
-				} else if(auto path = province::make_safe_land_path(state, st.loc, staging_prov, n); !path.empty()) {
+				} else if(auto safe_path = province::make_safe_land_path(state, st.loc, staging_prov, n); !safe_path.empty()) {
 					// Approach strictly along safe friendly supply lines to staging_prov first!
 					state.world.army_set_special_order(st.id, uint8_t(military::special_army_order::none));
-					military::set_army_path(state, st.id, path, n);
+					military::set_army_path(state, st.id, safe_path, n);
 					state.world.army_set_ai_province(st.id, target_p);
 					state.world.army_set_ai_activity(st.id, uint8_t(army_activity::attacking));
 					st.assigned = true;
 					pin_tracker.commit_pull(st.loc, st.regs);
 					issued_any = true;
 				} else if(pt.is_rebel_or_liberation) {
-					if(auto path = province::make_land_unit_path(state, st.loc, target_p, n, st.id); !path.empty()) {
+					if(auto lib_path = province::make_land_unit_path(state, st.loc, target_p, n, st.id); !lib_path.empty()) {
 						state.world.army_set_special_order(st.id, uint8_t(military::special_army_order::none));
-						military::set_army_path(state, st.id, path, n);
+						military::set_army_path(state, st.id, lib_path, n);
 						state.world.army_set_ai_province(st.id, target_p);
 						state.world.army_set_ai_activity(st.id, uint8_t(army_activity::attack_gathered));
 						st.assigned = true;
@@ -3836,9 +3836,9 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 						st.assigned = true;
 						pin_tracker.commit_pull(st.loc, st.regs);
 						issued_any = true;
-					} else if(auto path = province::make_safe_land_path(state, st.loc, staging_prov, n); !path.empty()) {
+					} else if(auto stage_path = province::make_safe_land_path(state, st.loc, staging_prov, n); !stage_path.empty()) {
 						state.world.army_set_special_order(st.id, uint8_t(military::special_army_order::none));
-						military::set_army_path(state, st.id, path, n);
+						military::set_army_path(state, st.id, stage_path, n);
 						state.world.army_set_ai_province(st.id, target_p);
 						state.world.army_set_ai_activity(st.id, uint8_t(army_activity::attacking));
 						st.assigned = true;
