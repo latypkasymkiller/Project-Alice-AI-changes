@@ -803,17 +803,21 @@ enum class zoom_level : uint8_t {
 
 template <border_kind BorderKind>
 bool should_render_border(const sys::state& state, zoom_level Zoom) {
-	if(BorderKind == border_kind::province && Zoom != zoom_level::very_close) {
-		return false;
+	if constexpr(BorderKind == border_kind::province) {
+		if(Zoom != zoom_level::very_close) {
+			return false;
+		}
 	}
-	if(BorderKind == border_kind::state_instance && Zoom == zoom_level::far_away) {
-		return false;
+	if constexpr(BorderKind == border_kind::state_instance) {
+		if(Zoom == zoom_level::far_away) {
+			return false;
+		}
 	}
-	if(BorderKind == border_kind::selected_province) {
+	if constexpr(BorderKind == border_kind::selected_province) {
 		if(state.local_player_nation && state.current_scene.borders == game_scene::borders_granularity::nation) {
 			return true;
 		}
-		if(state.map_state.selected_province && state.map_state.selected_province) {
+		if(state.map_state.selected_province) {
 			return true;
 		}
 	}
