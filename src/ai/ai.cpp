@@ -1673,8 +1673,10 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 		}
 	}
 
-	// Step 2: Bounded multi-source Dijkstra wave in march days over passable land graph (blocked by neutrals & seas!)
-	constexpr float max_wave_days = 45.0f;
+	// Step 2: Bounded multi-source Dijkstra wave in REAL march days over passable land graph (blocked by neutrals & seas!)
+	// Note: effective_military_distance returns km * movement_cost; infantry marches at ~4.0 * alice_army_marching_hours_per_day km/day!
+	float const km_per_day = std::max(5.0f, 4.0f * state.defines.alice_army_marching_hours_per_day);
+	constexpr float max_wave_days = 28.0f;
 	std::vector<float> local_dist(land_count, 999.0f);
 	std::vector<uint32_t> stamp(land_count, 0);
 	uint32_t cur_stamp = 0;
@@ -1704,7 +1706,7 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 			dcon::province_id u{ dcon::province_id::value_base_t(uidx) };
 			bool u_is_safe = check_safe(u);
 			if(u_is_safe) {
-				threat[uidx] += weight * std::exp(-d / 16.0f);
+				threat[uidx] += weight * std::exp(-d / 12.0f);
 				if(d < nearest_enemy_days[uidx]) {
 					nearest_enemy_days[uidx] = d;
 				}
@@ -1713,7 +1715,7 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 			if(d >= max_wave_days)
 				continue;
 
-			// Wave can step out of enemy territory (up to 18 march days deep) into our safe territory, then ONLY through safe land
+			// Wave can step out of enemy territory (up to 12 real march days deep, ~2 provinces) into our safe territory, then ONLY through safe land
 			for(auto padj : state.world.province_get_province_adjacency(u)) {
 				if(province::is_adjacency_impassable(state, n, padj.id))
 					continue;
@@ -1723,10 +1725,10 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 					continue;
 				bool v_is_safe = check_safe(v);
 				bool v_is_enemy = !v_is_safe && check_enemy_ctrl(v);
-				if(!v_is_safe && !(v_is_enemy && !u_is_safe && d <= 18.0f))
+				if(!v_is_safe && !(v_is_enemy && !u_is_safe && d <= 12.0f))
 					continue;
 
-				float step_days = std::max(2.0f, military::effective_military_distance(state, n, u, v) / 4.0f);
+				float step_days = std::max(1.5f, military::effective_military_distance(state, n, u, v) / km_per_day);
 				float nd = d + step_days;
 				if(nd <= max_wave_days && (stamp[vidx] != cur_stamp || nd < local_dist[vidx])) {
 					stamp[vidx] = cur_stamp;
@@ -2026,7 +2028,8 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 				role_mult = g.is_core ? 0.55f : 1.05f;
 			}
 
-			float dist_penalty = 1.0f + 4.0f * std::max(0.0f, province::sorting_distance(state, g.cur_loc, sl.id) + 1.0f);
+			float dist_km = province::direct_distance_km(state, g.cur_loc, sl.id);
+			float dist_penalty = 1.0f + dist_km / 250.0f;
 			float score = (sl.priority * need_factor * role_mult) / dist_penalty;
 
 			// Anti-ping-pong hysteresis (+30% bonus for staying on current province or keeping current valid destination)
@@ -2082,7 +2085,8 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 					rscore += 6.0f + float(state.world.province_get_building_level(rp, uint8_t(economy::province_building_type::naval_base))) * 4.0f;
 				}
 				if(rp == g.cur_loc) rscore *= 1.35f;
-				float dist_pen = 1.0f + 4.0f * std::max(0.0f, province::sorting_distance(state, g.cur_loc, rp) + 1.0f);
+				float rear_km = province::direct_distance_km(state, g.cur_loc, rp);
+				float dist_pen = 1.0f + rear_km / 250.0f;
 				rscore /= dist_pen;
 				if(rscore > best_rear_score || (rscore == best_rear_score && safe_rear_prov && rp.index() < safe_rear_prov.index())) {
 					best_rear_score = rscore;
@@ -2631,9 +2635,9 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 			continue;
 		if(state.world.province_get_connected_region_id(location) != p_region)
 			continue;
-		auto sdist = province::sorting_distance(state, location, p);
-		float max_gather_r = continuous_front ? state.defines.alice_ai_gather_radius : (state.defines.alice_ai_gather_radius * 1.5f);
-		if(sdist > max_gather_r)
+		float dist_km = province::direct_distance_km(state, location, p);
+		float max_gather_km = continuous_front ? 400.0f : 600.0f;
+		if(dist_km > max_gather_km)
 			continue;
 
 		auto regs = army.get_army_membership();
@@ -2649,7 +2653,7 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 			continue;
 		bool second_line = (enemy_elsewhere <= 0.1f);
 
-		cands.push_back(cand{ army.id, location, sdist, rcount, dig_in, is_core, second_line });
+		cands.push_back(cand{ army.id, location, dist_km, rcount, dig_in, is_core, second_line });
 	}
 
 	// Prefer free 2nd-line reserves first (zero frontline disruption!), then closest stacks
@@ -3608,8 +3612,10 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 	if(potential_targets.empty())
 		return;
 
-	// Unified Value / Cost target scoring (real warscore VP, wargoal, stockpile, dig_in==0 window / march+boarding days)
+	// Unified Value / Cost target scoring (real warscore VP, wargoal, stockpile, dig_in==0 window / real km march+boarding days)
 	auto our_cap = state.world.nation_get_capital(n);
+	float const land_km_per_day = std::max(5.0f, 4.0f * state.defines.alice_army_marching_hours_per_day);
+	float const sea_km_per_day = std::max(40.0f, 10.0f * state.defines.alice_navy_sailing_hours_per_day);
 	for(auto& pt : potential_targets) {
 		auto p = pt.location;
 		auto owner = state.world.province_get_nation_from_province_ownership(p);
@@ -3637,16 +3643,16 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 
 		// Directional pull along depth-1 land corridor toward strategic goals in the same region
 		if(pt.adjacent_to_friendly && !strategic_goals.empty()) {
-			float best_gdist = 1e9f;
+			float best_gdist_km = 1e9f;
 			for(auto gp : strategic_goals) {
 				if(state.world.province_get_connected_region_id(gp) == pt.region_id) {
-					float gd = province::direct_distance(state, p, gp);
-					if(gd < best_gdist)
-						best_gdist = gd;
+					float gd = province::direct_distance_km(state, p, gp);
+					if(gd < best_gdist_km)
+						best_gdist_km = gd;
 				}
 			}
-			if(best_gdist < 1e8f) {
-				value += 14.0f / (1.0f + best_gdist * 0.04f);
+			if(best_gdist_km < 1e8f) {
+				value += 14.0f / (1.0f + best_gdist_km / 250.0f);
 			}
 		}
 
@@ -3671,20 +3677,20 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 			}
 		}
 
-		// Real time cost: march days (same region) vs boarding + sea transit overhead (overseas)
-		float min_dd = 1e9f;
+		// Real time cost: march days in km (same region) vs boarding + sea transit overhead (overseas)
+		float min_km = 1e9f;
 		for(auto const& rs : ready_stacks) {
 			if(pt.has_same_region_stack && rs.region_id != pt.region_id)
 				continue;
-			float dd = province::direct_distance(state, rs.loc, p);
-			if(dd < min_dd)
-				min_dd = dd;
+			float km = province::direct_distance_km(state, rs.loc, p);
+			if(km < min_km)
+				min_km = km;
 		}
-		if(min_dd > 1e8f)
-			min_dd = 200.0f;
+		if(min_km > 1e8f)
+			min_km = 2000.0f;
 		float est_days = (pt.has_same_region_stack && (pt.adjacent_to_friendly || pt.is_rebel_or_liberation))
-			? std::max(4.0f, min_dd / 4.0f)
-			: (32.0f + min_dd / 6.0f);
+			? std::max(3.0f, min_km / land_km_per_day)
+			: (28.0f + min_km / sea_km_per_day);
 
 		float terrain_def = std::max(0.0f, state.world.province_get_modifier_values(p, sys::provincial_mod_offsets::defense));
 		float fort_lvl = float(state.world.province_get_building_level(p, uint8_t(economy::province_building_type::fort)));
@@ -3770,14 +3776,14 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 				continue;
 			if(!is_wg && !is_enemy_cap)
 				continue;
-			if(home_port && province::direct_distance(state, home_port, target_p) > 120.0f)
+			if(home_port && province::direct_distance_km(state, home_port, target_p) > 1000.0f)
 				continue;
 		}
 
 		// Find candidate unassigned stacks passing dynamic pinning (free 2nd-line reserves first!)
 		struct cand {
 			size_t idx;
-			float dist;
+			float dist_km;
 			bool is_core;
 			bool is_free_reserve;
 		};
@@ -3805,9 +3811,9 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 			if(is_at_war && !pin_tracker.can_pull(state, n, rs.loc, rs.regs, rs.dig_in, rs.is_core, target_p, stack_th.continuous_front))
 				continue;
 
-			float d = province::sorting_distance(state, rs.loc, target_p);
+			float d_km = province::direct_distance_km(state, rs.loc, target_p);
 			// Avoid pulling distant armies from across the continent for minor land skirmishes
-			if(is_at_war && use_land && target_theater.continuous_front && d > 0.15f && cands.size() >= 8)
+			if(is_at_war && use_land && target_theater.continuous_front && d_km > 700.0f && cands.size() >= 8)
 				continue;
 
 			float other_enemy = is_at_war
@@ -3819,7 +3825,7 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 				continue;
 			}
 
-			cands.push_back(cand{ s, d, rs.is_core, other_enemy <= 0.1f });
+			cands.push_back(cand{ s, d_km, rs.is_core, other_enemy <= 0.1f });
 		}
 		if(cands.empty())
 			continue;
@@ -3829,8 +3835,9 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 				return a.is_free_reserve > b.is_free_reserve;
 			if(use_naval && has_direct_defenders && a.is_core != b.is_core)
 				return a.is_core > b.is_core;
-			float a_key = a.dist - ((has_direct_defenders && a.is_core) ? 0.002f : 0.0f);
-			float b_key = b.dist - ((has_direct_defenders && b.is_core) ? 0.002f : 0.0f);
+			// Modest ~120 km (~1 province) preference for artillery-core stacks on defended battles, NEVER 400+ km!
+			float a_key = a.dist_km - ((has_direct_defenders && a.is_core) ? 120.0f : 0.0f);
+			float b_key = b.dist_km - ((has_direct_defenders && b.is_core) ? 120.0f : 0.0f);
 			if(a_key != b_key)
 				return a_key < b_key;
 			return ready_stacks[a.idx].id.index() < ready_stacks[b.idx].id.index();
@@ -3841,6 +3848,7 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		military::crossing_type best_crossing = military::crossing_type::sea;
 		if(use_land) {
 			float best_stage_score = -1e9f;
+			dcon::province_id lead_loc = ready_stacks[cands[0].idx].loc;
 			for(auto padj : state.world.province_get_province_adjacency(target_p)) {
 				if(province::is_adjacency_impassable(state, n, padj.id))
 					continue;
@@ -3851,7 +3859,11 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 					float sc = (ctype == military::crossing_type::none ? 30.0f : (ctype == military::crossing_type::river ? 10.0f : -20.0f));
 					sc += (tp > 0.0f ? 25.0f : -40.0f);
 					sc += float(military::supply_limit_in_province(state, n, other)) * 0.45f;
-					sc -= 40.0f * (province::sorting_distance(state, ready_stacks[cands[0].idx].loc, other) + 1.0f);
+					if(other == lead_loc) {
+						sc += 18.0f;
+					} else {
+						sc -= province::direct_distance_km(state, lead_loc, other) * 0.08f;
+					}
 					if(sc > best_stage_score || (sc == best_stage_score && staging_prov && other.index() < staging_prov.index())) {
 						best_stage_score = sc;
 						staging_prov = other;
@@ -3897,9 +3909,14 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		uint16_t naval_origin_region = ready_stacks[cands[0].idx].region_id;
 
 		if(!has_direct_defenders) {
-			// Empty tile (0 direct defenders): walk in with enough force not to get wiped by nearby 1-hop enemies!
+			// Empty tile (0 direct defenders): walk in with enough force not to get wiped by 1-hop enemies, WITHOUT over-stacking beyond supply!
 			// Never treat an empty tile as "defended by 69k dug-in hill troops"!
-			float needed_cover = nearby_enemy_regs * (stance == ai_front_helpers::war_stance::defensive ? 0.80f : 0.55f);
+			float const reg_w = std::max(0.1f, state.defines.pop_size_per_regiment / 1000.0f);
+			int32_t stage_sl_regs = staging_prov
+				? std::max(8, int32_t(float(military::supply_limit_in_province(state, n, staging_prov)) / reg_w))
+				: 12;
+			float raw_cover = nearby_enemy_regs * (stance == ai_front_helpers::war_stance::defensive ? 0.65f : 0.45f);
+			float needed_cover = std::min(raw_cover, float(stage_sl_regs));
 			if(needed_cover <= 1.0f) {
 				chosen_attackers.push_back(ready_stacks[cands[0].idx].id);
 				chosen_indices.push_back(cands[0].idx);
@@ -4069,11 +4086,14 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 			}
 		}
 
-		if(issued_any && is_at_war) {
-			// Avoid stacking multiple separate attacks onto identical adjacent tiles on the same tick
+		if(issued_any && is_at_war && has_direct_defenders) {
+			// Only avoid launching duplicate defended assaults on immediately adjacent defended tiles (~120 km),
+			// NEVER wipe out the whole 570 km theater or skip empty undefended border tiles (like empty Bohemia)!
 			for(uint32_t j = i + 1; j < psize; ++j) {
-				if(potential_targets[j].location
-					&& province::sorting_distance(state, potential_targets[j].location, target_p) < state.defines.alice_ai_attack_target_radius) {
+				auto jloc = potential_targets[j].location;
+				if(jloc
+					&& province::direct_distance_km(state, jloc, target_p) < 120.0f
+					&& ai_front_helpers::province_has_enemy_army(state, n, jloc)) {
 					potential_targets[j].location = dcon::province_id{};
 				}
 			}
@@ -4146,10 +4166,14 @@ void move_gathered_attackers_impl(sys::state& state, bool only_at_war) {
 						bool abort_attack = false;
 						if(!def_armies.empty()) {
 							std::vector<dcon::army_id> att_armies;
-							for(auto o : ar.get_location_from_army_location().get_army_location()) {
-								if(o.get_army().get_controller_from_army_control() == ctrl
-									&& o.get_army().get_ai_province() == target_p) {
-									att_armies.push_back(o.get_army().id);
+							for(auto o : state.world.nation_get_army_control(ctrl)) {
+								auto oa = o.get_army();
+								if(oa.get_is_retreating() || oa.get_black_flag() || oa.get_navy_from_army_transport())
+									continue;
+								auto oloc = oa.get_location_from_army_location().id;
+								if(oloc && oa.get_ai_province() == target_p
+									&& (oloc == loc || oloc == target_p || province::provinces_are_adjacent(state, oloc, target_p))) {
+									att_armies.push_back(oa.id);
 								}
 							}
 							if(att_armies.empty()) att_armies.push_back(ar.id);
@@ -4182,8 +4206,11 @@ void move_gathered_attackers_impl(sys::state& state, bool only_at_war) {
 						std::vector<dcon::army_id> att_armies;
 						for(auto o : state.world.nation_get_army_control(ctrl)) {
 							auto oa = o.get_army();
-							if(oa.get_ai_province() == target_p
-								&& (oa.get_location_from_army_location() == loc || oa.get_location_from_army_location() == target_p)) {
+							if(oa.get_is_retreating() || oa.get_black_flag() || oa.get_navy_from_army_transport())
+								continue;
+							auto oloc = oa.get_location_from_army_location().id;
+							if(oloc && oa.get_ai_province() == target_p
+								&& (oloc == loc || oloc == target_p || province::provinces_are_adjacent(state, oloc, target_p))) {
 								att_armies.push_back(oa.id);
 							}
 						}
@@ -5243,7 +5270,7 @@ void new_units_and_merging(sys::state& state) {
 				// Also allow idle 2..4-regiment starting fragments (away from active frontline contact) to march-merge into a nearby compatible stack!
 				if(!ai_front_helpers::is_province_near_hostiles(state, controller, location.id, 1)) {
 					dcon::province_id merge_dest;
-					float best_dist = 0.08f;
+					float best_dist_km = 450.0f;
 					for(auto o : controller.get_army_control()) {
 						auto other = o.get_army();
 						if(other.id == ar.id
@@ -5265,9 +5292,9 @@ void new_units_and_merging(sys::state& state) {
 							continue;
 						if(has_back && (osc.backline + my_sc.backline > core_backline_target || osc.backline + my_sc.backline > osc.frontline + my_sc.frontline))
 							continue;
-						float sdist = province::sorting_distance(state, location, oloc);
-						if(sdist < best_dist || (sdist == best_dist && merge_dest && oloc.id.index() < merge_dest.index())) {
-							best_dist = sdist;
+						float d_km = province::direct_distance_km(state, location.id, oloc.id);
+						if(d_km < best_dist_km || (d_km == best_dist_km && merge_dest && oloc.id.index() < merge_dest.index())) {
+							best_dist_km = d_km;
 							merge_dest = oloc.id;
 						}
 					}
@@ -6068,10 +6095,11 @@ void manage_active_battles(sys::state& state) {
 			std::vector<reinf_cand> reserves_pool;
 			uint16_t loc_region = state.world.province_get_connected_region_id(loc);
 
+			float const battle_km_per_day = std::max(5.0f, 4.0f * state.defines.alice_army_marching_hours_per_day);
 			for(auto n : ai_nations) {
 				bool cont_front = is_continuous_front(n, loc_region);
 				auto const& tracker = get_pin_tracker(n);
-				float max_gather_r = cont_front ? (state.defines.alice_ai_gather_radius * 1.4f) : (state.defines.alice_ai_gather_radius * 1.8f);
+				float max_gather_km = cont_front ? 450.0f : 650.0f;
 				float max_days = cont_front ? 22.0f : 26.0f;
 
 				for(auto ar : state.world.nation_get_army_control(n)) {
@@ -6092,15 +6120,15 @@ void manage_active_battles(sys::state& state) {
 					if(apath.size() > 0 && apath.at(0) == loc)
 						continue;
 
-					// Quick bounding filter before checking march time
-					float sdist = province::sorting_distance(state, aloc, loc);
-					if(sdist > max_gather_r)
+					// Quick bounding filter in real kilometers before checking march time
+					float dist_km = province::direct_distance_km(state, aloc, loc);
+					if(dist_km > max_gather_km)
 						continue;
 
 					bool adj_to_battle = province::provinces_are_adjacent(state, aloc, loc);
 					float est_days = adj_to_battle
 						? std::max(2.0f, military::movement_time_from_to(state, army.id, aloc, loc))
-						: std::max(8.0f, province::direct_distance(state, aloc, loc) * 0.12f);
+						: std::max(5.0f, dist_km / battle_km_per_day);
 					if(est_days > max_days)
 						continue;
 
@@ -6565,7 +6593,7 @@ void ai_split_surplus_regiments(sys::state& state, dcon::nation_id n) {
 		for(size_t d = 0; d < donors.size(); ++d) {
 			if(donors[d].region_id != tprov.region_id || donors[d].loc == tprov.p || donors[d].pure_inf.empty())
 				continue;
-			if(province::sorting_distance(state, donors[d].loc, tprov.p) > 0.08f)
+			if(province::direct_distance_km(state, donors[d].loc, tprov.p) > 450.0f)
 				continue;
 			donor_order.push_back(d);
 		}
@@ -6574,8 +6602,8 @@ void ai_split_surplus_regiments(sys::state& state, dcon::nation_id n) {
 			bool b_safe = (provs[donors[b].loc_prov_idx].adj_enemy_regs <= 0.1f);
 			if(a_safe != b_safe)
 				return a_safe > b_safe;
-			float da = province::sorting_distance(state, donors[a].loc, tprov.p);
-			float db = province::sorting_distance(state, donors[b].loc, tprov.p);
+			float da = province::direct_distance_km(state, donors[a].loc, tprov.p);
+			float db = province::direct_distance_km(state, donors[b].loc, tprov.p);
 			if(da != db)
 				return da < db;
 			return donors[a].id.index() < donors[b].id.index();
