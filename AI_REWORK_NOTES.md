@@ -41,6 +41,13 @@
 6. **ТЕХНИЧЕСКАЯ ОШИБКА (Visual Studio / CMake):**
    - Кнопка `Project → Delete Cache and Reconfigure` в Visual Studio удаляет только `CMakeCache.txt` и `CMakeFiles`, но **НЕ удаляет `_deps`**. Если файлы в `_deps` битые, надо вручную удалять всю папку `out/build/<preset>`.
 
+7. **ОШИБКА: «Заглушка `line1_provs.empty()` (всех в столицу) + недопонимание `relative_attrition_amount` + завышенный пол `max(14, supply_cap_regs)`»**
+   - *Реальность в коде (`military.cpp:6855-6941`):*
+     - `relative_attrition_amount(state, army, prov)` без 4-го аргумента считает только `local_army_weight(prov)` (вес армий, **уже** стоящих в `prov`, включая союзные и атакующие!) и **НЕ прибавляет** вес самой `army`, если она ещё в другой провинции.
+     - `supply_limit_in_province(state, n, prov)` для владельца (`owned && controlled`) имеет множитель `2.5` (например, в Париже 1839 у нейтрала 16, у Франции 40 = `13` полков по 3.0).
+     - В заморской войне (Франция против США) `line1_provs` пуст; отправка всех армий в `cap` свалила `133K` в одну клетку Парижа.
+   - *Исправление:* при `line1_provs.empty()` и при переполнении/спокойных регионах вызывается `distribute_guards_peacetime` / безопасный тыловой расстановщик, строго проверяющий `used_regs + g.regs <= floor(supply_limit / reg_weight)` с учётом уже стоящих союзных/не-guard армий; убран допуск `+3` и пол `14` в слиянии стеков, добавлен запрет доливать арту сверх числа фронтовых полков (`backline + join <= frontline`).
+
 ---
 
 ## 2. Проверенные реальные механики Project Alice (с опорой на код)

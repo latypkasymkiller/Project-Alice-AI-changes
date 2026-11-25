@@ -1400,6 +1400,8 @@ struct front_pin_tracker {
 
 } // namespace ai_front_helpers
 
+void distribute_guards_peacetime(sys::state& state, dcon::nation_id n);
+
 void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 	uint32_t const pcount = state.world.province_size();
 	uint32_t const first_sea = uint32_t(state.province_definitions.first_sea_province.index());
@@ -1717,13 +1719,9 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 		}
 	}
 
-	// If no active front exists on any land border (e.g., overseas war), fall back to guarding capital/ports
+	// If no active front exists on any land border (e.g., overseas war like France vs USA), distribute across capital/ports/borders strictly respecting province supply limits!
 	if(line1_provs.empty()) {
-		if(cap && cap.index() < land_count && check_safe(cap)) {
-			for(auto& g : guards) {
-				state.world.army_set_ai_province(g.id, cap);
-			}
-		}
+		distribute_guards_peacetime(state, n);
 		return;
 	}
 
@@ -1746,16 +1744,36 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 
 	auto prov_reg_cap = [&](dcon::province_id p) -> int32_t {
 		int32_t sl = military::supply_limit_in_province(state, n, p);
-		int32_t cap_by_sl = std::max(1, int32_t(float(sl) / reg_weight));
+		int32_t cap_by_sl = std::max(0, int32_t(float(sl) / reg_weight));
+		if(cap_by_sl <= 0)
+			return 0;
 		float tp = logistics::calculate_supply_throughput_in_province(state, p, n);
 		if(tp <= 0.0f) {
 			// Avoid parking guards in zero-throughput pockets (>1 deep in enemy land or cut off)
 			return 0;
 		}
 		if(tp < cap_throughput * 0.25f) {
-			cap_by_sl = std::max(4, cap_by_sl / 2);
+			cap_by_sl = std::min(cap_by_sl, std::max(4, cap_by_sl / 2));
 		}
 		return cap_by_sl;
+	};
+
+	// Count regiments already occupying p that are NOT in our reassignable guards list (allied armies + our attacking/merging armies count toward local_army_weight!)
+	auto count_preoccupied_regs = [&](dcon::province_id p) -> int32_t {
+		int32_t used = 0;
+		for(auto oa : state.world.province_get_army_location(p)) {
+			auto army = oa.get_army();
+			if(army.get_black_flag() || army.get_is_retreating() || army.get_navy_from_army_transport() || army.get_battle_from_army_battle_participation())
+				continue;
+			if(army.get_controller_from_army_control() == n
+				&& unit_on_ai_control(state, army)
+				&& army.get_ai_activity() == uint8_t(army_activity::on_guard)) {
+				continue; // will be assigned by this routine
+			}
+			auto r = army.get_army_membership();
+			used += int32_t(r.end() - r.begin());
+		}
+		return used;
 	};
 
 	for(auto p : line1_provs) {
@@ -1814,9 +1832,10 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 		int32_t rcap = prov_reg_cap(p);
 		if(rcap <= 0)
 			return -1;
+		int32_t pre_used = count_preoccupied_regs(p);
 		int32_t sidx = int32_t(slots.size());
 		prov_to_slot[idx] = sidx;
-		slots.push_back(prov_slot{ p, state.world.province_get_connected_region_id(p), line, rcap, 0, 0, 0, 0.0f });
+		slots.push_back(prov_slot{ p, state.world.province_get_connected_region_id(p), line, rcap, 0, pre_used, 0, 0.0f });
 		return sidx;
 	};
 
@@ -1967,11 +1986,8 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 			if(!same_region && !state.world.army_get_black_flag(g.id)) {
 				continue;
 			}
-			// Strictly respect province supply limit outside battle (allow single oversized stack alone on an empty high-SL province)
-			if(sl.assigned_regs > 0 && sl.assigned_regs + g.regs > sl.max_regs) {
-				continue;
-			}
-			if(sl.assigned_regs == 0 && g.regs > sl.max_regs + 3) {
+			// Strictly respect province supply limit outside battle (0% attrition — never stack over max_regs!)
+			if(sl.assigned_regs + g.regs > sl.max_regs) {
 				continue;
 			}
 
@@ -2018,41 +2034,101 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 			}
 			state.world.army_set_ai_province(g.id, slots[size_t(best_slot)].id);
 		} else {
-			// Fallback for overseas / disconnected garrisons: keep highest-priority front slot in another region if transportable
-			int32_t fallback_slot = -1;
-			float fb_score = -1.0f;
-			for(size_t si = 0; si < slots.size(); ++si) {
-				if(slots[si].assigned_regs + g.regs <= slots[si].max_regs && slots[si].priority > fb_score) {
-					fb_score = slots[si].priority;
-					fallback_slot = int32_t(si);
+			// Safe supply-respecting fallback inside the guard's own connected region (e.g., quiet homeland during a colonial front, or overflow beyond front supply limits)
+			dcon::province_id safe_rear_prov;
+			float best_rear_score = -1e9f;
+			dcon::province_id empty_max_prov;
+			int32_t empty_max_cap = -1;
+
+			for(auto pc : state.world.nation_get_province_control(n)) {
+				auto rp = pc.get_province().id;
+				if(!rp || rp.index() >= land_count)
+					continue;
+				if(state.world.province_get_connected_region_id(rp) != g.region_id)
+					continue;
+				if(!check_safe(rp))
+					continue;
+				int32_t rcap = prov_reg_cap(rp);
+				if(rcap <= 0)
+					continue;
+				int32_t existing_idx = prov_to_slot[rp.index()];
+				int32_t cur_used = (existing_idx >= 0) ? slots[size_t(existing_idx)].assigned_regs : count_preoccupied_regs(rp);
+				if(cur_used == 0 && rcap > empty_max_cap) {
+					empty_max_cap = rcap;
+					empty_max_prov = rp;
+				}
+				if(cur_used + g.regs > rcap)
+					continue;
+
+				float rscore = 10.0f;
+				if(rp == cap) rscore += 20.0f;
+				if(state.world.province_get_is_coast(rp)) {
+					rscore += 6.0f + float(state.world.province_get_building_level(rp, uint8_t(economy::province_building_type::naval_base))) * 4.0f;
+				}
+				if(rp == g.cur_loc) rscore *= 1.35f;
+				float dist_pen = 1.0f + 4.0f * std::max(0.0f, province::sorting_distance(state, g.cur_loc, rp) + 1.0f);
+				rscore /= dist_pen;
+				if(rscore > best_rear_score || (rscore == best_rear_score && safe_rear_prov && rp.index() < safe_rear_prov.index())) {
+					best_rear_score = rscore;
+					safe_rear_prov = rp;
 				}
 			}
-			if(fallback_slot >= 0) {
-				g.assigned = true;
-				slots[size_t(fallback_slot)].assigned_regs += g.regs;
-				state.world.army_set_ai_province(g.id, slots[size_t(fallback_slot)].id);
+
+			if(safe_rear_prov) {
+				int32_t s_rear = add_or_get_slot(safe_rear_prov, 3);
+				if(s_rear >= 0) {
+					g.assigned = true;
+					slots[size_t(s_rear)].assigned_regs += g.regs;
+					state.world.army_set_ai_province(g.id, safe_rear_prov);
+				}
+			} else if(empty_max_prov) {
+				// Oversized starting stack (before new_units_and_merging splits it): park it ALONE in the highest-supply empty province
+				int32_t s_rear = add_or_get_slot(empty_max_prov, 3);
+				if(s_rear >= 0) {
+					g.assigned = true;
+					slots[size_t(s_rear)].assigned_regs += g.regs;
+					state.world.army_set_ai_province(g.id, empty_max_prov);
+				}
+			} else {
+				// Last-resort cross-region fallback only if a transportable front slot has supply room
+				int32_t fallback_slot = -1;
+				float fb_score = -1.0f;
+				for(size_t si = 0; si < slots.size(); ++si) {
+					if(slots[si].assigned_regs + g.regs <= slots[si].max_regs && slots[si].priority > fb_score) {
+						fb_score = slots[si].priority;
+						fallback_slot = int32_t(si);
+					}
+				}
+				if(fallback_slot >= 0) {
+					g.assigned = true;
+					slots[size_t(fallback_slot)].assigned_regs += g.regs;
+					state.world.army_set_ai_province(g.id, slots[size_t(fallback_slot)].id);
+				}
 			}
 		}
 	}
 }
 
-void distribute_guards(sys::state& state, dcon::nation_id n) {
-	if(state.world.nation_get_is_at_war(n)) {
-		distribute_guards_wartime(state, n);
-		return;
-	}
+void distribute_guards_peacetime(sys::state& state, dcon::nation_id n) {
 	std::vector<classified_province> provinces;
-	provinces.reserve(state.world.province_size());
+	auto ctrl_range = state.world.nation_get_province_control(n);
+	provinces.reserve(size_t(ctrl_range.end() - ctrl_range.begin()));
 
 	auto cap = state.world.nation_get_capital(n);
+	bool at_war = state.world.nation_get_is_at_war(n);
 
-	for(auto c : state.world.nation_get_province_control(n)) {
-		province_class cls = c.get_province().get_is_coast() ? province_class::coast : province_class::interior;
-		if(c.get_province() == cap)
+	for(auto c : ctrl_range) {
+		auto prov = c.get_province();
+		province_class cls = prov.get_is_coast() ? province_class::coast : province_class::interior;
+		if(prov == cap) {
 			cls = province_class::border;
+		} else if(at_war && prov.get_is_coast() && prov.get_building_level(uint8_t(economy::province_building_type::naval_base)) > 0) {
+			// During overseas war, defend main naval ports alongside capital
+			cls = province_class::border;
+		}
 
-		for(auto padj : c.get_province().get_province_adjacency()) {
-			auto other = padj.get_connected_provinces(0) == c.get_province() ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
+		for(auto padj : prov.get_province_adjacency()) {
+			auto other = padj.get_connected_provinces(0) == prov ? padj.get_connected_provinces(1) : padj.get_connected_provinces(0);
 			auto n_controller = other.get_nation_from_province_control();
 			auto ovr = n_controller.get_overlord_as_subject().get_ruler();
 
@@ -2067,23 +2143,17 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 				cls = province_class::hostile_border;
 				break;
 			} else if(nations::are_allied(state, n, n_controller) || (ovr && ovr == n) || (ovr && nations::are_allied(state, n, ovr))) {
-				// allied controller or subject of allied controller or our "parent" overlord
 				if(uint8_t(cls) < uint8_t(province_class::low_priority_border)) {
 					cls = province_class::low_priority_border;
 				}
 			} else {
-				/* We will target POTENTIAL enemies of the nation;
-				   we could also check if the CB can be used on us, but
-				   that is expensive, so instead we use available_cbs! */
 				bool is_threat = false;
 				if(n_controller) {
 					is_threat |= n_controller.get_ai_rival() == n;
 					is_threat |= state.world.nation_get_ai_rival(n) == n_controller.id;
 					if(ovr) {
-						/* subjects cannot negotiate by themselves, but the overlord may */
 						is_threat |= ovr.get_ai_rival() == n;
 						is_threat |= state.world.nation_get_ai_rival(n) == ovr.id;
-						//
 						is_threat |= ovr.get_constructing_cb_target() == n;
 						for(auto cb : ovr.get_available_cbs())
 							is_threat |= cb.target == n;
@@ -2097,17 +2167,20 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 					if(uint8_t(cls) < uint8_t(province_class::threat_border)) {
 						cls = province_class::threat_border;
 					}
-				} else { // other border
+				} else {
 					if(uint8_t(cls) < uint8_t(province_class::border)) {
 						cls = province_class::border;
 					}
 				}
 			}
 		}
-		provinces.push_back(classified_province{ c.get_province().id, cls });
+		provinces.push_back(classified_province{ prov.id, cls });
 	}
 
-	std::sort(provinces.begin(), provinces.end(), [&](classified_province& a, classified_province& b) {
+	if(provinces.empty())
+		return;
+
+	std::sort(provinces.begin(), provinces.end(), [&](classified_province const& a, classified_province const& b) {
 		if(a.c != b.c) {
 			return uint8_t(a.c) > uint8_t(b.c);
 		}
@@ -2119,81 +2192,132 @@ void distribute_guards(sys::state& state, dcon::nation_id n) {
 		return a.id.index() < b.id.index();
 	});
 
-	// form list of guards
-	std::vector<dcon::army_id> guards_list;
-	guards_list.reserve(state.world.army_size());
-	for(auto a : state.world.nation_get_army_control(n)) {
-		if(a.get_army().get_ai_activity() == uint8_t(army_activity::on_guard)) {
-			guards_list.push_back(a.get_army().id);
+	float const reg_weight = std::max(0.1f, state.defines.pop_size_per_regiment / 1000.0f);
+	struct peace_prov_cap {
+		int32_t cap_regs = 0;
+		int32_t used_regs = 0;
+		uint16_t region_id = 0;
+	};
+	std::vector<peace_prov_cap> pcaps(provinces.size());
+	for(size_t j = 0; j < provinces.size(); ++j) {
+		auto p = provinces[j].id;
+		int32_t sl = military::supply_limit_in_province(state, n, p);
+		int32_t cap_regs = std::max(0, int32_t(float(sl) / reg_weight));
+		int32_t pre_used = 0;
+		for(auto oa : state.world.province_get_army_location(p)) {
+			auto army = oa.get_army();
+			if(army.get_black_flag() || army.get_is_retreating() || army.get_navy_from_army_transport() || army.get_battle_from_army_battle_participation())
+				continue;
+			if(army.get_controller_from_army_control() == n
+				&& unit_on_ai_control(state, army)
+				&& army.get_ai_activity() == uint8_t(army_activity::on_guard)) {
+				continue;
+			}
+			auto r = army.get_army_membership();
+			pre_used += int32_t(r.end() - r.begin());
 		}
+		pcaps[j] = peace_prov_cap{ cap_regs, pre_used, state.world.province_get_connected_region_id(p) };
 	}
 
-	// distribute target provinces
-	uint32_t end_of_stage = 0;
+	struct peace_guard {
+		dcon::army_id id;
+		dcon::province_id loc;
+		uint16_t region_id = 0;
+		int32_t regs = 0;
+		bool black_flag = false;
+	};
+	std::vector<peace_guard> guards_list;
+	for(auto a : state.world.nation_get_army_control(n)) {
+		auto ar = a.get_army();
+		if(!unit_on_ai_control(state, ar)
+			|| ar.get_ai_activity() != uint8_t(army_activity::on_guard)
+			|| ar.get_battle_from_army_battle_participation()
+			|| ar.get_navy_from_army_transport()
+			|| ar.get_is_retreating()) {
+			continue;
+		}
+		auto loc = ar.get_location_from_army_location().id;
+		if(!loc || province::is_sea(state, loc))
+			continue;
+		auto regs = ar.get_army_membership();
+		int32_t rcount = int32_t(regs.end() - regs.begin());
+		if(rcount <= 0)
+			continue;
+		guards_list.push_back(peace_guard{ ar.id, loc, state.world.province_get_connected_region_id(loc), rcount, ar.get_black_flag() });
+	}
+	if(guards_list.empty())
+		return;
 
+	// Distribute across priority stages strictly within each province's real supply_limit (0% attrition!)
+	uint32_t end_of_stage = 0;
 	for(uint8_t stage = uint8_t(province_class::count); stage-- > 0 && !guards_list.empty(); ) {
 		uint32_t start_of_stage = end_of_stage;
-
 		for(; end_of_stage < provinces.size(); ++end_of_stage) {
 			if(uint8_t(provinces[end_of_stage].c) != stage)
 				break;
 		}
 
-		uint32_t full_loops_through = 0;
 		bool guard_assigned = false;
 		do {
 			guard_assigned = false;
 			for(uint32_t j = start_of_stage; j < end_of_stage && !guards_list.empty(); ++j) {
 				auto p = provinces[j].id;
-				auto p_region = state.world.province_get_connected_region_id(provinces[j].id);
-				assert(p_region > 0);
-				bool p_region_is_coastal = state.province_definitions.connected_region_is_coastal[p_region - 1];
+				auto& pc = pcaps[j];
+				if(pc.used_regs >= pc.cap_regs)
+					continue;
 
-				if(10.0f * (1 + full_loops_through) <= military::peacetime_attrition_limit(state, n, p)) {
-					uint32_t nearest_index = 0;
-					dcon::army_id nearest;
-					float nearest_distance = 1.0f;
-					for(uint32_t k = uint32_t(guards_list.size()); k-- > 0;) {
-						auto guard_loc = state.world.army_get_location_from_army_location(guards_list[k]);
-
-						if(military::relative_attrition_amount(state, guards_list[k], p) >= 0.02f)
-							continue; //too heavy
-
-						/*
-						// this wont work because a unit could end up in, for example, a subject's region at the end of a war
-						// this region could be landlocked, resulting in this thinking that the unit can only be stationed in that
-						// same region, even though it could walk out to another region
-
-						auto g_region = state.world.province_get_connected_region_id(guard_loc);
-						assert(g_region > 0);
-
-						if(p_region != g_region && !(state.world.army_get_black_flag(guards_list[k]))  && (!p_region_is_coastal || !state.province_definitions.connected_region_is_coastal[g_region - 1]))
-							continue;
-						*/
-
-						if(auto d = province::sorting_distance(state, guard_loc, p); !nearest || d < nearest_distance) {
-
-							nearest_index = k;
-							nearest_distance = d;
-							nearest = guards_list[k];
-						}
-					}
-
-					// assign nearest guard
-					if(nearest) {
-						state.world.army_set_ai_province(nearest, p);
-						guards_list[nearest_index] = guards_list.back();
-						guards_list.pop_back();
-
-						guard_assigned = true;
+				int32_t best_k = -1;
+				float best_dist = 1e9f;
+				for(size_t k = 0; k < guards_list.size(); ++k) {
+					auto const& g = guards_list[k];
+					if(pc.used_regs + g.regs > pc.cap_regs)
+						continue; // STRICT supply limit check (accounting for already assigned & preoccupied regiments!)
+					if(g.region_id != pc.region_id && !g.black_flag)
+						continue;
+					float d = province::sorting_distance(state, g.loc, p);
+					if(g.loc == p) d -= 0.01f; // mild hysteresis to prevent pointless shuffling
+					if(best_k < 0 || d < best_dist || (d == best_dist && g.id.index() < guards_list[size_t(best_k)].id.index())) {
+						best_k = int32_t(k);
+						best_dist = d;
 					}
 				}
+
+				if(best_k >= 0) {
+					state.world.army_set_ai_province(guards_list[size_t(best_k)].id, p);
+					pc.used_regs += guards_list[size_t(best_k)].regs;
+					guards_list[size_t(best_k)] = guards_list.back();
+					guards_list.pop_back();
+					guard_assigned = true;
+				}
 			}
-
-			++full_loops_through;
 		} while(guard_assigned);
-
 	}
+
+	// Any remaining oversized or cross-region guards: park ALONE in the highest-supply empty province of their region (never stack on top of another army!)
+	for(auto const& g : guards_list) {
+		int32_t best_j = -1;
+		int32_t best_cap = -1;
+		for(size_t j = 0; j < provinces.size(); ++j) {
+			if(pcaps[j].region_id != g.region_id && !g.black_flag)
+				continue;
+			if(pcaps[j].used_regs == 0 && pcaps[j].cap_regs > best_cap) {
+				best_cap = pcaps[j].cap_regs;
+				best_j = int32_t(j);
+			}
+		}
+		if(best_j >= 0) {
+			state.world.army_set_ai_province(g.id, provinces[size_t(best_j)].id);
+			pcaps[size_t(best_j)].used_regs += g.regs;
+		}
+	}
+}
+
+void distribute_guards(sys::state& state, dcon::nation_id n) {
+	if(state.world.nation_get_is_at_war(n)) {
+		distribute_guards_wartime(state, n);
+		return;
+	}
+	distribute_guards_peacetime(state, n);
 }
 
 dcon::navy_id find_transport_fleet(sys::state& state, dcon::nation_id controller) {
@@ -4479,12 +4603,12 @@ inline int32_t typical_supply_regiment_cap(sys::state& state, dcon::nation_id n)
 	if(samples.empty()) {
 		auto cap = state.world.nation_get_capital(n);
 		int32_t sl = cap ? military::supply_limit_in_province(state, n, cap) : 30;
-		return std::clamp(int32_t(float(sl) / reg_weight), 8, 30);
+		return std::clamp(int32_t(float(sl) / reg_weight), 6, 30);
 	}
 	std::sort(samples.begin(), samples.end());
 	// Use 40th percentile across border/owned provinces so stacks fit realistic front supply limits (not just a high-SL capital!)
 	size_t idx = (samples.size() * 2) / 5;
-	return std::clamp(samples[idx], 8, 30);
+	return std::clamp(samples[idx], 6, 30);
 }
 
 struct stack_composition {
@@ -4797,10 +4921,11 @@ void new_units_and_merging(sys::state& state) {
 
 		int32_t nation_cw = ai_detail::estimate_nation_base_combat_width(state, controller);
 		int32_t supply_cap_regs = ai_detail::typical_supply_regiment_cap(state, controller);
-		// Core artillery stack: 4..10 backline (scales up to full late-game plain CW when supply permits) + >=1:1 frontline cover
-		int32_t core_backline_target = std::clamp(std::min(nation_cw <= 14 ? nation_cw : 5, supply_cap_regs / 2), 4, 10);
-		// Pure infantry reserve stack (including mobilized brigades): 8..12 regiments, fitting province supply limits
-		int32_t reserve_stack_target = std::clamp((supply_cap_regs * 3) / 4, 8, 12);
+		int32_t max_stack_regs = std::max(6, supply_cap_regs);
+		// Core artillery stack: 3..10 backline (scales with era CW and real front supply limit) + >=1:1 frontline cover
+		int32_t core_backline_target = std::clamp(std::min(nation_cw <= 14 ? nation_cw : 5, max_stack_regs / 2), 3, 10);
+		// Pure infantry reserve stack (including mobilized brigades): 6..12 regiments, strictly fitting province supply limits
+		int32_t reserve_stack_target = std::clamp((max_stack_regs * 3) / 4, 6, std::min(12, max_stack_regs));
 
 		auto is_compatible_merge_host = [&](dcon::army_id host, bool joining_is_backline, bool joining_is_recon, bool joining_is_siege, int32_t joining_count) -> int32_t {
 			if(host == ar.id)
@@ -4814,12 +4939,17 @@ void new_units_and_merging(sys::state& state) {
 			auto hsc = ai_detail::classify_army_composition(state, controller, host);
 			if(hsc.total == 0)
 				return 0;
-			if(hsc.total + joining_count > std::max(14, supply_cap_regs))
+			auto hloc = state.world.army_get_location_from_army_location(host);
+			int32_t host_sl_regs = hloc ? std::max(1, int32_t(float(military::supply_limit_in_province(state, controller, hloc)) / reg_weight)) : max_stack_regs;
+			int32_t host_cap = std::min(max_stack_regs, host_sl_regs);
+			if(hsc.total + joining_count > host_cap)
 				return 0;
 
 			bool host_is_core = (hsc.backline > 0);
 			if(joining_is_backline) {
-				// Artillery/engineers go to artillery-core stacks up to core_backline_target, or seed one from a pure inf stack with >= 4 frontline
+				// NEVER push backline above frontline cover (prevents exposed 3/0/5 artillery stacks!)
+				if(hsc.backline + joining_count > hsc.frontline)
+					return 0;
 				if(host_is_core && hsc.backline + joining_count <= core_backline_target) {
 					return (joining_is_siege && hsc.siege == 0) ? 4 : 3;
 				}
@@ -4843,12 +4973,12 @@ void new_units_and_merging(sys::state& state) {
 			if(host_is_core && hsc.frontline < std::max(core_backline_target + 1, hsc.backline + 2)) {
 				return 4;
 			}
-			// Priority 2: build pure infantry reserve stacks (8-12 regiments) instead of bloating artillery stacks!
+			// Priority 2: build pure infantry reserve stacks (6-12 regiments within supply) instead of bloating artillery stacks!
 			if(!host_is_core && hsc.total + joining_count <= reserve_stack_target) {
 				return 3;
 			}
 			// Priority 3: top off a core stack slightly if no reserve stack is available
-			if(host_is_core && hsc.frontline < core_backline_target + 3 && hsc.total + joining_count <= supply_cap_regs) {
+			if(host_is_core && hsc.frontline < core_backline_target + 3 && hsc.total + joining_count <= host_cap) {
 				return 1;
 			}
 			return 0;
@@ -4905,7 +5035,7 @@ void new_units_and_merging(sys::state& state) {
 		} else if(army_activity(ar.get_ai_activity()) == army_activity::merging) {
 			auto my_sc = ai_detail::classify_army_composition(state, controller, ar.id);
 			int32_t local_sl_regs = std::max(1, int32_t(float(military::supply_limit_in_province(state, controller, location.id)) / reg_weight));
-			int32_t local_cap = std::max({ 14, supply_cap_regs, local_sl_regs });
+			int32_t guard_merge_cap = std::min(max_stack_regs, local_sl_regs);
 
 			dcon::army_id best_host;
 			int32_t best_tier = 0;
@@ -4934,14 +5064,17 @@ void new_units_and_merging(sys::state& state) {
 					tier = is_compatible_merge_host(other_army.id, is_back, is_rec, is_sg, 1);
 				} else {
 					auto hsc = ai_detail::classify_army_composition(state, controller, other_army.id);
+					int32_t cap_here = (oact == army_activity::attacking) ? local_sl_regs : guard_merge_cap;
+					bool art_covered = (my_sc.backline == 0) || (hsc.backline + my_sc.backline <= hsc.frontline + my_sc.frontline);
 					if(hsc.total > 0
-						&& hsc.total + my_sc.total <= local_cap
-						&& hsc.backline + my_sc.backline <= core_backline_target) {
+						&& hsc.total + my_sc.total <= cap_here
+						&& hsc.backline + my_sc.backline <= core_backline_target
+						&& art_covered) {
 						if(oact == army_activity::attacking) {
 							tier = 5;
 						} else if(hsc.backline > 0 && hsc.frontline < hsc.backline + 2 && my_sc.frontline > 0) {
 							tier = 4;
-						} else if(hsc.backline == 0 && my_sc.backline == 0 && hsc.total + my_sc.total <= std::max(reserve_stack_target, local_sl_regs)) {
+						} else if(hsc.backline == 0 && my_sc.backline == 0 && hsc.total + my_sc.total <= std::min(reserve_stack_target, local_sl_regs)) {
 							tier = 3;
 						} else {
 							tier = 2;
@@ -4967,6 +5100,7 @@ void new_units_and_merging(sys::state& state) {
 				ar.set_ai_province(dcon::province_id{});
 			}
 		} else if(army_activity(ar.get_ai_activity()) == army_activity::on_guard) {
+			int32_t local_sl_regs = std::max(1, int32_t(float(military::supply_limit_in_province(state, controller, location.id)) / reg_weight));
 			// Coalesce small idle on-guard fragments (2..4 regiments): first same province, then nearby safe host in same region!
 			if(reg_count <= 4) {
 				auto my_sc = ai_detail::classify_army_composition(state, controller, ar.id);
@@ -4987,10 +5121,10 @@ void new_units_and_merging(sys::state& state) {
 						continue;
 					if(osc.total == reg_count && other.id.index() > ar.id.index())
 						continue;
-					int32_t max_allowed = (has_back || osc.backline > 0) ? std::max(14, supply_cap_regs) : reserve_stack_target;
+					int32_t max_allowed = std::min(local_sl_regs, (has_back || osc.backline > 0) ? max_stack_regs : reserve_stack_target);
 					if(osc.total + reg_count > max_allowed)
 						continue;
-					if(has_back && osc.backline + my_sc.backline > core_backline_target)
+					if(has_back && (osc.backline + my_sc.backline > core_backline_target || osc.backline + my_sc.backline > osc.frontline + my_sc.frontline))
 						continue;
 					if(osc.total > best_host_regs) {
 						best_host_regs = osc.total;
@@ -5028,10 +5162,11 @@ void new_units_and_merging(sys::state& state) {
 						auto osc = ai_detail::classify_army_composition(state, controller, other.id);
 						if(osc.total < reg_count || (osc.total == reg_count && other.id.index() > ar.id.index()))
 							continue;
-						int32_t max_allowed = (has_back || osc.backline > 0) ? std::max(14, supply_cap_regs) : reserve_stack_target;
+						int32_t oloc_sl_regs = std::max(1, int32_t(float(military::supply_limit_in_province(state, controller, oloc.id)) / reg_weight));
+						int32_t max_allowed = std::min(oloc_sl_regs, (has_back || osc.backline > 0) ? max_stack_regs : reserve_stack_target);
 						if(osc.total + reg_count > max_allowed)
 							continue;
-						if(has_back && osc.backline + my_sc.backline > core_backline_target)
+						if(has_back && (osc.backline + my_sc.backline > core_backline_target || osc.backline + my_sc.backline > osc.frontline + my_sc.frontline))
 							continue;
 						float sdist = province::sorting_distance(state, location, oloc);
 						if(sdist < best_dist || (sdist == best_dist && merge_dest && oloc.id.index() < merge_dest.index())) {
@@ -5058,10 +5193,12 @@ void new_units_and_merging(sys::state& state) {
 				}
 			}
 
-			// Split severely oversized stacks suffering attrition so they can echelon cleanly without melting
-			int32_t split_threshold = std::max(16, supply_cap_regs + 2);
-			if(reg_count >= split_threshold
-				&& military::relative_attrition_amount(state, ar.id, location.id) >= 0.02f) {
+			// Split oversized stacks that by themselves exceed local/typical supply limit and are suffering attrition
+			bool alone_over_local_sl = (reg_count > local_sl_regs);
+			bool over_typical_cap = (reg_count >= std::max(10, supply_cap_regs + 2));
+			if(reg_count >= 8
+				&& (alone_over_local_sl || over_typical_cap)
+				&& military::relative_attrition_amount(state, ar.id, location.id) >= 0.01f) {
 				std::vector<dcon::regiment_id> front_regs;
 				std::vector<dcon::regiment_id> back_regs;
 				for(auto r : regs) {
@@ -6029,7 +6166,7 @@ void merge_arrived_reinforcements(sys::state& state, dcon::nation_id n) {
 
 		auto my_sc = ai_detail::classify_army_composition(state, n, ar.id);
 		int32_t local_sl_regs = std::max(1, int32_t(float(military::supply_limit_in_province(state, n, loc.id)) / reg_weight));
-		int32_t local_cap = std::max({ 14, supply_cap_regs, local_sl_regs });
+		int32_t local_cap = local_sl_regs;
 
 		dcon::army_id best_host;
 		int32_t best_tier = 0;
@@ -6046,9 +6183,11 @@ void merge_arrived_reinforcements(sys::state& state, dcon::nation_id n) {
 			if(oact != army_activity::on_guard && oact != army_activity::attacking)
 				continue;
 			auto hsc = ai_detail::classify_army_composition(state, n, other.id);
+			bool art_covered = (my_sc.backline == 0) || (hsc.backline + my_sc.backline <= hsc.frontline + my_sc.frontline);
 			if(hsc.total == 0
 				|| hsc.total + my_sc.total > local_cap
-				|| hsc.backline + my_sc.backline > core_backline_target) {
+				|| hsc.backline + my_sc.backline > core_backline_target
+				|| !art_covered) {
 				continue;
 			}
 			int32_t tier = (oact == army_activity::attacking) ? 5
@@ -6117,11 +6256,22 @@ void ai_split_surplus_regiments(sys::state& state, dcon::nation_id n) {
 				return i;
 		}
 		int32_t sl = military::supply_limit_in_province(state, n, p);
-		int32_t scap = std::max(1, int32_t(float(sl) / reg_weight));
+		int32_t scap = std::max(0, int32_t(float(sl) / reg_weight));
+		// Account for allied/non-n armies already occupying p (local_army_weight sums ALL non-blackflag non-retreating armies!)
+		int32_t other_regs = 0;
+		for(auto oa : state.world.province_get_army_location(p)) {
+			auto oarmy = oa.get_army();
+			if(oarmy.get_black_flag() || oarmy.get_is_retreating() || oarmy.get_navy_from_army_transport() || oarmy.get_battle_from_army_battle_participation())
+				continue;
+			if(oarmy.get_controller_from_army_control() == n && unit_on_ai_control(state, oarmy))
+				continue; // counted directly in the army_control loop below
+			auto orng = oarmy.get_army_membership();
+			other_regs += int32_t(orng.end() - orng.begin());
+		}
 		provs.push_back(prov_state{
 			p,
 			state.world.province_get_connected_region_id(p),
-			0,
+			other_regs,
 			0,
 			0,
 			0,
