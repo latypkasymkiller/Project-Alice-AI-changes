@@ -1230,6 +1230,14 @@ inline theater_summary evaluate_theater_summary(
 	for(auto e : war_enemies) {
 		min_enemy_cw = std::min(min_enemy_cw, nation_base_cw(state, e));
 	}
+	float const reg_weight = std::max(0.1f, state.defines.pop_size_per_regiment / 1000.0f);
+
+	int32_t own_front_provs = 0;
+	int32_t own_front_cap_sum = 0;
+	int32_t coalition_regs = 0;
+	int32_t coalition_stacks = 0;
+	int32_t coalition_front_provs = 0;
+	int32_t coalition_front_cap_sum = 0;
 
 	for(auto a_nat : war_allies) {
 		for(auto ar : state.world.nation_get_army_control(a_nat)) {
@@ -1250,6 +1258,8 @@ inline theater_summary evaluate_theater_summary(
 					ts.our_regs += rcount;
 					ts.our_stacks += 1;
 				}
+				coalition_regs += rcount;
+				coalition_stacks += 1;
 				ts.our_eff_regs += eff;
 			}
 		}
@@ -1273,11 +1283,23 @@ inline theater_summary evaluate_theater_summary(
 				}
 			}
 			if(front) {
-				++ts.front_prov_count;
-				ts.front_cw_sum += prov_cw(state, n, p, min_enemy_cw);
+				// Real holding capacity of 1 front tile in ANY era is min(combat_width, province_supply_cap_in_regs)!
+				// In 1839 Silesia (5 tiles, supply ~11 regs, CW=30), 6 stacks of 30k fully seal the front -> continuous front!
+				// In 1836 USA-Mexico (12 tiles, 3 stacks) -> low stack & reg coverage -> Austerlitz maneuver war!
+				int32_t sl_regs = std::max(4, int32_t(float(military::supply_limit_in_province(state, n, p)) / reg_weight));
+				int32_t line_cap = std::max(4, std::min(prov_cw(state, n, p, min_enemy_cw), sl_regs));
+				++coalition_front_provs;
+				coalition_front_cap_sum += line_cap;
+				if(a_nat == n) {
+					++own_front_provs;
+					own_front_cap_sum += line_cap;
+				}
 			}
 		}
 	}
+
+	ts.front_prov_count = (own_front_provs > 0) ? own_front_provs : coalition_front_provs;
+	ts.front_cw_sum = (own_front_provs > 0) ? own_front_cap_sum : coalition_front_cap_sum;
 
 	for(auto e_nat : war_enemies) {
 		for(auto ar : state.world.nation_get_army_control(e_nat)) {
@@ -1293,10 +1315,14 @@ inline theater_summary evaluate_theater_summary(
 		}
 	}
 
-	float density = float(ts.our_regs) / std::max(1.0f, float(ts.front_cw_sum));
-	ts.continuous_front = (ts.front_prov_count > 0)
-		&& (density >= 0.75f)
-		&& (ts.our_stacks >= std::max(3, int32_t(float(ts.front_prov_count) * 0.65f)));
+	// Compare own forces against own border (AND coalition forces against coalition border) — never divide 1 nation by 15 allies' borders!
+	bool own_continuous = (own_front_provs > 0)
+		&& (float(ts.our_regs) >= float(own_front_cap_sum) * 0.65f)
+		&& (ts.our_stacks >= std::max(2, int32_t(std::ceil(float(own_front_provs) * 0.70f))));
+	bool coalition_continuous = (coalition_front_provs > 0)
+		&& (float(coalition_regs) >= float(coalition_front_cap_sum) * 0.65f)
+		&& (coalition_stacks >= std::max(2, int32_t(std::ceil(float(coalition_front_provs) * 0.70f))));
+	ts.continuous_front = own_continuous || coalition_continuous;
 
 	float ratio = ts.our_eff_regs / std::max(1.0f, ts.enemy_eff_regs);
 	if(ratio < 0.85f) {
@@ -1425,8 +1451,6 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 		bool assigned = false;
 	};
 	std::vector<guard_unit> guards;
-	std::vector<int32_t> theater_total_regs;
-	std::vector<int32_t> theater_total_stacks;
 
 	for(auto a : state.world.nation_get_army_control(n)) {
 		auto ar = a.get_army();
@@ -1441,12 +1465,6 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 			continue;
 
 		uint16_t reg_id = state.world.province_get_connected_region_id(loc);
-		if(reg_id >= theater_total_regs.size()) {
-			theater_total_regs.resize(size_t(reg_id) + 1, 0);
-			theater_total_stacks.resize(size_t(reg_id) + 1, 0);
-		}
-		theater_total_regs[reg_id] += rcount;
-		theater_total_stacks[reg_id] += 1;
 
 		if(ar.get_ai_activity() == uint8_t(army_activity::on_guard)
 			&& !ar.get_battle_from_army_battle_participation()
@@ -1728,12 +1746,11 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 	// Step 3: Evaluate theater density per connected_region_id ("Austerlitz" mobile fist vs "WWI" continuous front)
 	struct theater_info {
 		int32_t front_prov_count = 0;
-		int32_t front_cw_sum = 0;
 		bool continuous_front = false;
 		dcon::province_id fist_anchor;
 		float fist_anchor_score = -1.0f;
 	};
-	std::vector<theater_info> theaters(std::max<size_t>(theater_total_regs.size(), 2));
+	std::vector<theater_info> theaters(2);
 
 	auto ensure_theater = [&](uint16_t rid) -> theater_info& {
 		if(rid >= theaters.size()) {
@@ -1783,7 +1800,6 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 		uint16_t rid = state.world.province_get_connected_region_id(p);
 		auto& th = ensure_theater(rid);
 		++th.front_prov_count;
-		th.front_cw_sum += ai_front_helpers::prov_cw(state, n, p, min_enemy_cw);
 
 		// Compute Austerlitz mobile fist anchor: prioritize confronting the MAIN enemy army concentration (never let a tiny 12k naval raid steal the anchor from a 90k main front!)
 		int32_t rcap = prov_reg_cap(p);
@@ -1801,13 +1817,11 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 	}
 
 	for(size_t rid = 0; rid < theaters.size(); ++rid) {
-		int32_t our_regs = rid < theater_total_regs.size() ? theater_total_regs[rid] : 0;
-		int32_t our_stacks = rid < theater_total_stacks.size() ? theater_total_stacks[rid] : 0;
-		float density = float(our_regs) / std::max(1.0f, float(theaters[rid].front_cw_sum));
-		// Switch to WWI continuous-front mode only when we actually have enough regiments & stacks to cover the line without being walked around
-		theaters[rid].continuous_front = (theaters[rid].front_prov_count > 0)
-			&& (density >= 0.75f)
-			&& (our_stacks >= std::max(3, int32_t(float(theaters[rid].front_prov_count) * 0.65f)));
+		if(theaters[rid].front_prov_count > 0) {
+			// Single source of truth with assign_targets / gather_to_battle / manage_active_battles!
+			auto ts = ai_front_helpers::evaluate_theater_summary(state, n, uint16_t(rid), war_allies, war_enemies, false);
+			theaters[rid].continuous_front = ts.continuous_front;
+		}
 	}
 
 	// Step 4: Build deployment slots (desired regiments, capacity, priority, echelon) for every candidate province
