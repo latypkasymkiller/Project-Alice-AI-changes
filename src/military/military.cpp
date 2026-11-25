@@ -2660,12 +2660,15 @@ void monthly_leaders_update(sys::state& state) {
 			});
 
 	for(auto n : state.world.in_nation) {
-		if(n.get_leadership_points() > state.defines.leader_recruit_cost * 3.0f && state.defines.alice_auto_hire_generals > 0.f) {
+		auto existing_leaders = count_leaders(state, n);
+		auto army_count = count_armies(state, n);
+		auto navy_count = count_navies(state, n);
+		bool ai_needs_leader = !n.get_is_player_controlled()
+			&& (existing_leaders.generals < army_count || existing_leaders.admirals < navy_count);
+		float recruit_threshold = ai_needs_leader ? state.defines.leader_recruit_cost : (state.defines.leader_recruit_cost * 3.0f);
+		if(n.get_leadership_points() >= recruit_threshold && state.defines.alice_auto_hire_generals > 0.f) {
 			// automatically make new leader
 			auto new_l = [&]() {
-				auto existing_leaders = count_leaders(state, n);
-				auto army_count = count_armies(state, n);
-				auto navy_count = count_navies(state, n);
 				if(existing_leaders.generals < army_count) {
 					return make_new_leader(state, n, true);
 				} else if(existing_leaders.admirals < navy_count) {
@@ -3021,6 +3024,11 @@ void add_to_war(sys::state& state, dcon::war_id w, dcon::nation_id n, bool as_at
 			}
 		}
 	}
+	if(!on_war_creation && !state.cheat_data.disable_ai) {
+		for(auto war_par : state.world.war_get_war_participant(w)) {
+			ai::on_war_state_changed(state, war_par.get_nation());
+		}
+	}
 }
 
 
@@ -3124,6 +3132,9 @@ dcon::war_id create_war(sys::state& state, dcon::nation_id primary_attacker, dco
 			ai::add_free_ai_cbs_to_war(state, primary_attacker, new_war);
 		if(state.world.nation_get_is_player_controlled(primary_defender) == false)
 			ai::add_free_ai_cbs_to_war(state, primary_defender, new_war);
+		for(auto war_par : state.world.war_get_war_participant(new_war)) {
+			ai::on_war_state_changed(state, war_par.get_nation());
+		}
 	}
 
 	notification::post(state, notification::message{
@@ -3452,6 +3463,12 @@ void remove_from_war(sys::state& state, dcon::war_id w, dcon::nation_id n, bool 
 
 	if(as_loss) {
 		state.world.nation_set_last_war_loss(n, state.current_date);
+	}
+	if(!state.cheat_data.disable_ai) {
+		ai::on_war_state_changed(state, n);
+		for(auto war_par : state.world.war_get_war_participant(w)) {
+			ai::on_war_state_changed(state, war_par.get_nation());
+		}
 	}
 }
 

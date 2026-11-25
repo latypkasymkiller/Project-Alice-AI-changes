@@ -4873,6 +4873,8 @@ void state::fill_unsaved_data() { // reconstructs derived values that are not di
 	ai::initialize_ai_tech_weights(*this);
 	ai::update_ai_general_status(*this);
 	ai::refresh_home_ports(*this);
+	ai::update_unit_supply_priorities(*this);
+	ai::manage_ai_leaders(*this);
 
 #ifndef NDEBUG
 	/*for(auto p : world.in_pop) {
@@ -5243,6 +5245,8 @@ void state::single_game_tick() {
 			ai::update_ai_colonial_investment(*this);
 		}
 
+		ai::war_ai_tick(*this);
+
 		if(defines.alice_eval_ai_mil_everyday != 0.0f) {
 			ai::make_defense(*this);
 			ai::make_attacks(*this);
@@ -5272,6 +5276,7 @@ void state::single_game_tick() {
 			break;
 		case 3:
 			military::monthly_leaders_update(*this);
+			ai::manage_ai_leaders(*this);
 			ai::add_wargoals(*this);
 			break;
 		case 4:

@@ -32,6 +32,15 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 void make_attacks(sys::state& state);
 void make_defense(sys::state& state);
 void general_ai_unit_tick(sys::state& state);
+void war_ai_tick(sys::state& state);
+void manage_active_battles(sys::state& state);
+void on_war_state_changed(sys::state& state, dcon::nation_id n);
+void update_unit_supply_priorities_for_nation(sys::state& state, dcon::nation_id n);
+void update_unit_supply_priorities(sys::state& state);
+void manage_ai_leaders_for_nation(sys::state& state, dcon::nation_id n);
+void manage_ai_leaders(sys::state& state);
+void update_mobilization_for_nation(sys::state& state, dcon::nation_id n);
+void update_mobilization(sys::state& state);
 
 bool unit_on_ai_control(const sys::state& state, dcon::navy_id a);
 bool unit_on_ai_control(const sys::state& state, dcon::army_id a);

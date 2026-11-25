@@ -72,24 +72,26 @@ void update_ai_general_status(sys::state& state) {
 			}
 		}
 
-		float self_str = float(state.world.nation_get_military_score(n));
-		for(auto subj : n.get_overlord_as_ruler())
-			self_str += 0.75f * float(subj.get_subject().get_military_score());
+		float self_str = estimate_strength(state, n);
 		float defensive_str = estimate_defensive_strength(state, n);
 
 		bool threatened = defensive_str < safety_factor * greatest_neighbor;
 		state.world.nation_set_ai_is_threatened(n, threatened);
 
 		if(!n.get_ai_rival()) {
-			float min_str = 0.0f;
+			float best_str = 0.0f;
 			dcon::nation_id potential;
 			for(auto adj : n.get_nation_adjacency()) {
 				auto other = adj.get_connected_nations(0) != n ? adj.get_connected_nations(0) : adj.get_connected_nations(1);
 				auto ol = other.get_overlord_as_subject().get_ruler();
-				if(!ol && other.get_in_sphere_of() != n && (!threatened || !nations::are_allied(state, n, other))) {
+				if(!ol
+					&& other.get_in_sphere_of() != n
+					&& (!threatened || !nations::are_allied(state, n, other))
+					&& !military::are_on_same_side_in_common_war(state, n, other)) {
 					auto other_str = estimate_strength(state, other);
-					if(self_str * 0.5f < other_str && other_str <= self_str * 1.5f && min_str > self_str) {
-						min_str = other_str;
+					if(self_str * 0.5f < other_str && other_str <= self_str * 1.5f
+						&& (other_str > best_str || (other_str == best_str && (!potential || other.id.index() < potential.index())))) {
+						best_str = other_str;
 						potential = other;
 					}
 				}
@@ -97,10 +99,15 @@ void update_ai_general_status(sys::state& state) {
 
 			if(potential) {
 				if(!n.get_is_player_controlled() && nations::are_allied(state, n, potential)) {
-					assert(command::can_cancel_alliance(state, n, potential));
-					command::execute_cancel_alliance(state, n, potential);
+					if(command::can_cancel_alliance(state, n, potential, true)) {
+						command::execute_cancel_alliance(state, n, potential);
+					} else {
+						potential = dcon::nation_id{};
+					}
 				}
-				n.set_ai_rival(potential);
+				if(potential) {
+					n.set_ai_rival(potential);
+				}
 			}
 		} else {
 			auto rival_str = estimate_strength(state, n.get_ai_rival());

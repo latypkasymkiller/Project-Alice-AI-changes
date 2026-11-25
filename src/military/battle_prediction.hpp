@@ -96,7 +96,7 @@ float battle_win_score(
 	float attacker_general_prestige,
 	float defender_general_prestige
 ) {
-	float score = 0.f
+	float score = Cw[0]
 	+ Cw[1] * attacker_str
 	+ Cw[2] * defender_str
 	+ Cw[3] * dig_in

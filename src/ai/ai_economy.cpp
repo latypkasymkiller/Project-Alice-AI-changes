@@ -16,6 +16,8 @@
 #include "advanced_province_buildings.hpp"
 #include "economy_constants.hpp"
 #include "nations_templates.hpp"
+#include "military.hpp"
+#include "military_templates.hpp"
 
 namespace ai {
 
@@ -701,234 +703,370 @@ void update_ai_econ_construction(sys::state& state) {
 	}
 }
 
-// Will try to stockpile up to thsis amount of days of the daily army/navy consumption
-constexpr uint32_t days_of_reserve_military_goods = 365 * 3;
+// Will try to stockpile up to this amount of days of expected wartime army/navy consumption
+constexpr uint32_t days_of_reserve_military_goods = 365;
+// Expected daily replacement rate of regiment build goods during sustained wartime attrition/combat (~15% per month)
+constexpr float expected_wartime_daily_reinf_rate = 0.005f;
+
+war_economy_mode evaluate_war_economy_mode(sys::state& state, dcon::nation_id nid) {
+	auto n = fatten(state.world, nid);
+	if(!n.get_is_at_war()) {
+		// Pre-war readiness: own CB fabrication almost complete (>= 65%), or a dangerous neighbor is fabricating a discovered CB on us
+		if(n.get_constructing_cb_type() && n.get_constructing_cb_progress() >= 65.0f) {
+			return war_economy_mode::prewar_ready;
+		}
+		float own_str = std::max(1.0f, estimate_strength(state, nid));
+		for(auto adj : state.world.nation_get_nation_adjacency(nid)) {
+			auto other = adj.get_connected_nations(0) != nid ? adj.get_connected_nations(0) : adj.get_connected_nations(1);
+			if(other.get_constructing_cb_target() == nid && other.get_constructing_cb_is_discovered()) {
+				if(estimate_strength(state, other) >= own_str * 0.35f) {
+					return war_economy_mode::prewar_ready;
+				}
+			}
+		}
+		return war_economy_mode::peacetime;
+	}
+
+	// At war: compare enemy coalition strength vs our coalition strength across all active wars
+	float friendly_str = estimate_strength(state, nid);
+	float enemy_str = 0.0f;
+	std::vector<dcon::nation_id> counted_allies;
+	std::vector<dcon::nation_id> counted_enemies;
+	counted_allies.push_back(nid);
+
+	for(auto wp : state.world.nation_get_war_participant(nid)) {
+		bool we_attack = wp.get_is_attacker();
+		for(auto par : wp.get_war().get_war_participant()) {
+			auto other = par.get_nation().id;
+			if(par.get_is_attacker() == we_attack) {
+				if(std::find(counted_allies.begin(), counted_allies.end(), other) == counted_allies.end()) {
+					counted_allies.push_back(other);
+					friendly_str += estimate_strength(state, other);
+				}
+			} else {
+				if(std::find(counted_enemies.begin(), counted_enemies.end(), other) == counted_enemies.end()) {
+					counted_enemies.push_back(other);
+					enemy_str += estimate_strength(state, other);
+				}
+			}
+		}
+	}
+
+	// Also treat war as major if any opponent is a GP or is mobilized, or if enemies are >= 35% of our coalition strength
+	bool dangerous_enemy = enemy_str >= std::max(1.0f, friendly_str) * 0.35f;
+	if(!dangerous_enemy) {
+		for(auto e : counted_enemies) {
+			if(state.world.nation_get_is_mobilized(e) && estimate_strength(state, e) >= std::max(1.0f, estimate_strength(state, nid)) * 0.25f) {
+				dangerous_enemy = true;
+				break;
+			}
+		}
+	}
+
+	return dangerous_enemy ? war_economy_mode::major_war : war_economy_mode::minor_war;
+}
+
+void update_stockpile_targets_for_nation(sys::state& state, dcon::nation_id nid) {
+	if(state.world.nation_get_is_player_controlled(nid) || state.world.nation_get_owned_province_count(nid) == 0) {
+		return;
+	}
+	tagged_vector<float, dcon::unit_supply_and_build_commodity_id> expected_daily(state.world.unit_supply_and_build_commodity_size());
+	auto accumulate_func = [&](dcon::commodity_id com_id, float amount) {
+		auto sup_build_com_id = state.world.commodity_get_unit_supply_and_build_commodity(com_id);
+		if(sup_build_com_id) {
+			expected_daily[sup_build_com_id] += amount;
+		}
+	};
+
+	// Account for both full daily supply consumption AND realistic expected wartime combat reinforcement demand
+	for(auto a : state.world.nation_get_army_control(nid)) {
+		for(auto r : a.get_army().get_army_membership()) {
+			auto reg = r.get_regiment();
+			auto type = reg.get_type();
+			military::accumulate_subunit_daily_goods_requirements<military::unit_consumption_type::supply>(state, nid, reg.id, accumulate_func);
+			const auto& build_cost = state.military_definitions.unit_base_definitions[type].build_cost;
+			for(uint32_t i = 0; i < economy::commodity_set::set_size; ++i) {
+				if(build_cost.commodity_type[i]) {
+					accumulate_func(build_cost.commodity_type[i], build_cost.commodity_amounts[i] * expected_wartime_daily_reinf_rate);
+				} else {
+					break;
+				}
+			}
+		}
+	}
+	for(auto a : state.world.nation_get_navy_control(nid)) {
+		for(auto s : a.get_navy().get_navy_membership()) {
+			auto shp = s.get_ship();
+			military::accumulate_subunit_daily_goods_requirements<military::unit_consumption_type::supply>(state, nid, shp.id, accumulate_func);
+			const auto& build_cost = state.military_definitions.unit_base_definitions[shp.get_type()].build_cost;
+			for(uint32_t i = 0; i < economy::commodity_set::set_size; ++i) {
+				if(build_cost.commodity_type[i]) {
+					accumulate_func(build_cost.commodity_type[i], build_cost.commodity_amounts[i] * (expected_wartime_daily_reinf_rate * 0.4f));
+				} else {
+					break;
+				}
+			}
+		}
+	}
+
+	state.world.for_each_unit_supply_and_build_commodity([&](dcon::unit_supply_and_build_commodity_id com_id) {
+		auto base_com_id = economy::unit_commodity_get_base_commodity(state, com_id);
+		float expected_consume = expected_daily[com_id];
+		state.world.nation_set_stockpile_targets(nid, base_com_id, expected_consume * days_of_reserve_military_goods);
+	});
+}
 
 void update_stockpile_targets(sys::state& state) {
 	nations::parallel_for_each_existing_nation(state, [&](dcon::nation_id nid) {
-		if(state.world.nation_get_is_player_controlled(nid)) {
-			return;
-		}
-		auto army_navy_consumption = economy::estimate_nation_army_and_navy_consumption(state, nid);
-		state.world.for_each_unit_supply_and_build_commodity([&](dcon::unit_supply_and_build_commodity_id com_id) {
-			auto base_com_id = economy::unit_commodity_get_base_commodity(state, com_id);
-			float expected_consume = army_navy_consumption[com_id];
-			state.world.nation_set_stockpile_targets(nid, base_com_id, expected_consume * days_of_reserve_military_goods);
-
-		});
+		update_stockpile_targets_for_nation(state, nid);
 	});
+}
+
+void update_budget_for_nation(sys::state& state, dcon::nation_id nid, bool presim) {
+	auto n = fatten(state.world, nid);
+	if(n.get_is_player_controlled() || n.get_owned_province_count() == 0)
+		return;
+
+	// current stockpiles roughly correspond to current income
+	// and calculation of actual prediction is insanely expensive
+	float base_income = n.get_treasury();
+
+	// Compute average army strength so post-war AI keeps reinforcing until regiments are recovered
+	float total_reg_str = 0.0f;
+	int32_t total_regs = 0;
+	for(auto ar : state.world.nation_get_army_control(nid)) {
+		for(auto r : ar.get_army().get_army_membership()) {
+			total_reg_str += r.get_regiment().get_strength();
+			++total_regs;
+		}
+	}
+	bool needs_postwar_reinforce = (total_regs > 0) && (total_reg_str / float(total_regs) < 0.95f);
+
+	bool has_navy = (n.get_navy_control().begin() != n.get_navy_control().end());
+	auto mode = presim ? war_economy_mode::peacetime : evaluate_war_economy_mode(state, nid);
+
+	float land_budget_ratio = 0.12f;
+	float sea_budget_ratio = has_navy ? 0.05f : 0.0f;
+	float land_supply_consumption = 0.15f;
+	float land_reinf_consumption = needs_postwar_reinforce ? 0.80f : 0.20f;
+	float naval_supply_consumption = has_navy ? 0.15f : 0.0f;
+	float naval_reinf_consumption = has_navy ? 0.20f : 0.0f;
+
+	float education_budget_ratio = 0.15f;
+	float investments_budget_ratio = 0.15f;
+	float soldiers_budget_ratio = 0.12f;
+	float construction_budget_ratio = 0.40f;
+	float stockpile_budget_ratio = 0.0f;
+	float overseas_maintenance_budget_ratio = 0.10f;
+
+	int8_t factory_construction_setting = 100;
+	int8_t building_construction_setting = 100;
+
+	if(presim) {
+		// set military supply sliders high in presim to simulate demand
+		land_budget_ratio = 0.30f;
+		sea_budget_ratio = has_navy ? 0.30f : 0.0f;
+	} else if(mode == war_economy_mode::major_war) {
+		land_budget_ratio = 0.60f;
+		sea_budget_ratio = has_navy ? 0.20f : 0.0f;
+		education_budget_ratio = 0.08f;
+		investments_budget_ratio = 0.05f;
+		construction_budget_ratio = 0.10f;
+		soldiers_budget_ratio = 0.20f;
+		overseas_maintenance_budget_ratio = 0.02f;
+		stockpile_budget_ratio = 0.05f;
+
+		land_supply_consumption = 1.0f;
+		land_reinf_consumption = 1.0f;
+		naval_supply_consumption = has_navy ? 1.0f : 0.0f;
+		naval_reinf_consumption = has_navy ? 1.0f : 0.0f;
+		factory_construction_setting = 35;
+		building_construction_setting = 35;
+	} else if(mode == war_economy_mode::minor_war) {
+		land_budget_ratio = 0.35f;
+		sea_budget_ratio = has_navy ? 0.15f : 0.0f;
+		education_budget_ratio = 0.12f;
+		investments_budget_ratio = 0.10f;
+		construction_budget_ratio = 0.30f;
+		soldiers_budget_ratio = 0.15f;
+		overseas_maintenance_budget_ratio = 0.05f;
+		stockpile_budget_ratio = 0.05f;
+
+		land_supply_consumption = 1.0f;
+		land_reinf_consumption = 1.0f;
+		naval_supply_consumption = has_navy ? 0.80f : 0.0f;
+		naval_reinf_consumption = has_navy ? 0.80f : 0.0f;
+	} else if(mode == war_economy_mode::prewar_ready) {
+		land_budget_ratio = 0.35f;
+		sea_budget_ratio = has_navy ? 0.12f : 0.0f;
+		construction_budget_ratio = 0.25f;
+		soldiers_budget_ratio = 0.15f;
+		stockpile_budget_ratio = 0.14f;
+
+		land_supply_consumption = 1.0f;
+		land_reinf_consumption = 1.0f;
+		naval_supply_consumption = has_navy ? 0.60f : 0.0f;
+		naval_reinf_consumption = has_navy ? 0.60f : 0.0f;
+	} else if(n.get_ai_is_threatened()) {
+		land_budget_ratio = needs_postwar_reinforce ? 0.28f : 0.18f;
+		sea_budget_ratio = has_navy ? 0.08f : 0.0f;
+		overseas_maintenance_budget_ratio = 0.075f;
+		stockpile_budget_ratio = 0.14f;
+
+		land_supply_consumption = 0.35f;
+		land_reinf_consumption = needs_postwar_reinforce ? 0.90f : 0.40f;
+		naval_supply_consumption = has_navy ? 0.25f : 0.0f;
+		naval_reinf_consumption = has_navy ? 0.25f : 0.0f;
+	} else if(future_rebels_in_nation(state, n) > 0) {
+		land_budget_ratio = needs_postwar_reinforce ? 0.28f : 0.20f;
+		stockpile_budget_ratio = 0.08f;
+
+		land_supply_consumption = 0.45f;
+		land_reinf_consumption = needs_postwar_reinforce ? 0.90f : 0.45f;
+	} else {
+		if(needs_postwar_reinforce) {
+			land_budget_ratio = 0.25f;
+		}
+		stockpile_budget_ratio = 0.10f;
+	}
+
+	float soldiers_budget = soldiers_budget_ratio * base_income;
+	float overseas_budget = overseas_maintenance_budget_ratio * base_income;
+
+	n.set_land_spending(int8_t(land_budget_ratio * 100.0f));
+	n.set_land_supply_consumption(int8_t(land_supply_consumption * 100.0f));
+	n.set_land_reinforcement_consumption(int8_t(land_reinf_consumption * 100.0f));
+	n.set_army_construction_consumption(int8_t(100));
+	n.set_navy_construction_consumption(int8_t(100));
+	n.set_factory_construction_consumption(factory_construction_setting);
+	n.set_building_construction_consumption(building_construction_setting);
+
+	n.set_naval_spending(int8_t(sea_budget_ratio * 100.0f));
+	n.set_naval_supply_consumption(int8_t(naval_supply_consumption * 100.0f));
+	n.set_naval_reinforcement_consumption(int8_t(naval_reinf_consumption * 100.0f));
+
+	n.set_administrative_spending(15);
+	n.set_subsidies_spending(3);
+
+	float max_soldiers_budget = 1.f + economy::national_budget::estimate_pop_payouts_by_income_type(state, n, culture::income_type::military);
+	float max_overseas_budget = 1.f + economy::estimate_overseas_penalty_spending_before_refund(state, n);
+
+	n.set_education_spending(int8_t(education_budget_ratio * 100.f));
+	n.set_construction_spending(int8_t(construction_budget_ratio * 100.f));
+	n.set_stockpile_spending(int8_t(stockpile_budget_ratio * 100.f));
+
+	// If State can build factories - why subsidize capitalists
+	// answer: because nation has different priorities
+	// and investments of capitalists are easy way
+	// to build consumer-oriented industry
+	// without writing additional layer of logic for national ai
+	auto rules = n.get_combined_issue_rules();
+	if(n.get_is_civilized()) {
+		if((rules & issue_rule::build_factory) == 0) {
+			n.set_domestic_investment_spending(int8_t(investments_budget_ratio * 100.f));
+		} else {
+			n.set_domestic_investment_spending(int8_t(investments_budget_ratio * 50.f));
+		}
+	} else {
+		n.set_domestic_investment_spending(int8_t(0));
+	}
+
+	float soldiers_max_ratio = 100.f * math::sqrt(soldiers_budget / max_soldiers_budget);
+	soldiers_max_ratio = std::clamp(soldiers_max_ratio, 0.f, 100.f);
+
+	float overseas_max_ratio = std::clamp(100.f * overseas_budget / max_overseas_budget, 0.f, 100.f);
+
+	n.set_tariffs_import(int8_t(10));
+	n.set_tariffs_export(int8_t(10));
+
+	float poor_militancy = (state.world.nation_get_demographics(n, demographics::poor_militancy) / std::max(1.0f, state.world.nation_get_demographics(n, demographics::poor_total))) / 10.f;
+	float mid_militancy = (state.world.nation_get_demographics(n, demographics::middle_militancy) / std::max(1.0f, state.world.nation_get_demographics(n, demographics::middle_total))) / 10.f;
+	float rich_militancy = (state.world.nation_get_demographics(n, demographics::rich_militancy) / std::max(1.0f, state.world.nation_get_demographics(n, demographics::rich_total))) / 10.f;
+
+	bool military_priority_active = (mode == war_economy_mode::major_war || mode == war_economy_mode::prewar_ready || n.get_ai_is_threatened());
+
+	// don't tax pops too much
+	if((rules & issue_rule::expand_factory) != 0 || (rules & issue_rule::build_factory) != 0) {
+		// Non-lf prioritize poor people
+		int max_poor_tax = int(10.f + 25.f * (1.f - poor_militancy));
+		int max_mid_tax = int(10.f + 35.f * (1.f - mid_militancy));
+		int max_rich_tax = int(10.f + 50.f * (1.f - rich_militancy));
+
+		// if we are not able to control capital, our taxes are not enough
+		bool enough_tax = n.get_capital().get_control_ratio() > 0.95f;
+
+		if(n.get_spending_level() < 1.0f || n.get_last_treasury() >= n.get_treasury() || !enough_tax) { // losing money
+			if(!military_priority_active) {
+				n.set_military_spending(int8_t(std::max(50, n.get_military_spending() - 5)));
+			}
+			n.set_social_spending(1);
+
+			n.set_poor_tax(int8_t(std::clamp(n.get_poor_tax() + 2, 10, std::max(10, max_poor_tax))));
+			n.set_middle_tax(int8_t(std::clamp(n.get_middle_tax() + 3, 10, std::max(10, max_mid_tax))));
+			n.set_rich_tax(int8_t(std::clamp(n.get_rich_tax() + 5, 10, std::max(10, max_rich_tax))));
+		} else if(n.get_last_treasury() < n.get_treasury()) { // gaining money
+			if(military_priority_active) {
+				n.set_military_spending(int8_t(std::min(100, n.get_military_spending() + 10)));
+			} else {
+				n.set_military_spending(int8_t(std::min(75, n.get_military_spending() + 10)));
+			}
+			n.set_social_spending(3);
+
+			if(enough_tax) {
+				n.set_poor_tax(int8_t(std::clamp(n.get_poor_tax() - 2, 10, std::max(10, max_poor_tax))));
+				n.set_middle_tax(int8_t(std::clamp(n.get_middle_tax() - 3, 10, std::max(10, max_mid_tax))));
+				n.set_rich_tax(int8_t(std::clamp(n.get_rich_tax() - 5, 10, std::max(10, max_rich_tax))));
+			}
+		}
+	} else {
+		int max_poor_tax = int(10.f + 30.f * (1.f - poor_militancy));
+		int max_mid_tax = int(10.f + 30.f * (1.f - mid_militancy));
+		int max_rich_tax = int(10.f + 10.f * (1.f - rich_militancy));
+		int max_social = int(20.f * poor_militancy);
+
+		// enough tax?
+		bool enough_tax = n.get_capital().get_control_ratio() > 0.95f;
+
+		// Laissez faire prioritize tax free capitalists
+		if(n.get_spending_level() < 1.0f || n.get_last_treasury() >= n.get_treasury() || !enough_tax) { // losing money
+			if(!military_priority_active) {
+				n.set_military_spending(int8_t(std::max(50, n.get_military_spending() - 5)));
+			}
+			n.set_social_spending(int8_t(max_social / 2));
+
+			n.set_poor_tax(int8_t(std::clamp(n.get_poor_tax() + 5, 10, std::max(10, max_poor_tax))));
+			n.set_middle_tax(int8_t(std::clamp(n.get_middle_tax() + 3, 10, std::max(10, max_mid_tax))));
+			n.set_rich_tax(int8_t(std::clamp(n.get_rich_tax() + 2, 10, std::max(10, max_rich_tax))));
+		} else if(n.get_last_treasury() < n.get_treasury()) { // gaining money
+			if(military_priority_active) {
+				n.set_military_spending(int8_t(std::min(100, n.get_military_spending() + 10)));
+			} else {
+				n.set_military_spending(int8_t(std::min(75, n.get_military_spending() + 10)));
+			}
+			n.set_social_spending(int8_t(max_social));
+
+			if(enough_tax) {
+				n.set_poor_tax(int8_t(std::clamp(n.get_poor_tax() - 5, 10, std::max(10, max_poor_tax))));
+				n.set_middle_tax(int8_t(std::clamp(n.get_middle_tax() - 3, 10, std::max(10, max_mid_tax))));
+				n.set_rich_tax(int8_t(std::clamp(n.get_rich_tax() - 2, 10, std::max(10, max_rich_tax))));
+			}
+		}
+	}
+
+	if(mode == war_economy_mode::major_war) {
+		n.set_military_spending(int8_t(std::max(int8_t(75), std::min(int8_t(soldiers_max_ratio), n.get_military_spending()))));
+	} else {
+		n.set_military_spending(int8_t(std::min(int8_t(soldiers_max_ratio), n.get_military_spending())));
+	}
+	n.set_overseas_spending(int8_t(overseas_max_ratio));
+
+	economy::bound_budget_settings(state, n);
 }
 
 void update_budget(sys::state& state, bool presim) {
 	concurrency::parallel_for(uint32_t(0), state.world.nation_size(), [&](uint32_t i) {
 		dcon::nation_id nid{ dcon::nation_id::value_base_t(i) };
-		auto n = fatten(state.world, nid);
-		if(n.get_is_player_controlled() || n.get_owned_province_count() == 0)
-			return;
-
-		// current stockpiles roughly correspond to current income
-		// and calculation of actual prediction is insanely expensive
-		float base_income = n.get_treasury();
-
-		// they don't have to add up to 1.f
-		// the reason they are there is to slow down AI spendings,
-		// make them more or less balanced
-		// and stabilize economy faster
-		// not to allow it to hoard money
-
-		float land_budget_ratio = 0.10f;
-		float sea_budget_ratio;
-		float land_supply_consumption = 0.1f;
-		float land_reinf_consumption = 0.1f;
-		float naval_supply_consumption;
-		float naval_reinf_consumption;
-		if(n.get_navy_control().begin() != n.get_navy_control().end()) {
-			sea_budget_ratio = 0.05f;
-			naval_supply_consumption = 0.1f;
-			naval_reinf_consumption = 0.1f;
-		}
-		else {
-			sea_budget_ratio = 0.0f;
-			naval_supply_consumption = 0.0f;
-			naval_reinf_consumption = 0.0f;
-		}
-		uint32_t total_military_constructions = uint32_t(n.get_province_land_construction().end() - n.get_province_land_construction().begin()) + uint32_t(n.get_province_naval_construction().end() - n.get_province_naval_construction().begin());
-		if(presim) {
-			// set military supply sliders high in presim to simulate demand
-			land_budget_ratio = 0.3f;
-			sea_budget_ratio = 0.3f;
-			
-		}
-		float education_budget_ratio = 0.15f;
-		float investments_budget_ratio = 0.15f;
-		float soldiers_budget_ratio = 0.1f;
-		float construction_budget_ratio = 0.45f;
-		float stockpile_budget_ratio = 0.0f;
-		float overseas_maintenance_budget_ratio = 0.10f;
-
-		if(n.get_is_at_war()) {
-			land_budget_ratio *= 3.0f;
-			sea_budget_ratio *= 3.0f;
-			education_budget_ratio *= 0.75f;
-			overseas_maintenance_budget_ratio *= 0.15f;
-
-			land_supply_consumption *= 9.0f;
-			land_reinf_consumption *= 9.0f;
-			naval_supply_consumption *= 6.0f;
-			naval_reinf_consumption *= 6.0f;
-
-
-		} else if(n.get_ai_is_threatened()) {
-			land_budget_ratio *= 1.5f;
-			sea_budget_ratio *= 1.5f;
-			overseas_maintenance_budget_ratio *= 0.75f;
-
-			land_supply_consumption *= 3.0f;
-			land_reinf_consumption *= 3.0f;
-			naval_supply_consumption *= 2.0f;
-			naval_reinf_consumption *= 2.0f;
-
-			// spend some money on stockpiling important goods while threatened in peacetime
-			stockpile_budget_ratio += 0.10f;
-			
-		}
-		else if(future_rebels_in_nation(state, n) > 0) {
-
-			land_budget_ratio *= 1.4f;
-
-			land_supply_consumption *= 2.5f;
-			land_reinf_consumption *= 2.5f;
-		}
-		else {
-			// spend some money on stockpiling important goods in peacetime
-			stockpile_budget_ratio += 0.08f;
-		}
-		float soldiers_budget = soldiers_budget_ratio * base_income;
-		float overseas_budget = overseas_maintenance_budget_ratio * base_income;
-
-		n.set_land_spending(int8_t(land_budget_ratio * 100.0f));
-		n.set_land_supply_consumption(int8_t(land_supply_consumption * 100.0f));
-		n.set_land_reinforcement_consumption(int8_t(land_reinf_consumption * 100.0f));
-		n.set_army_construction_consumption(int8_t(100));
-		n.set_navy_construction_consumption(int8_t(100));
-		n.set_factory_construction_consumption(int8_t(100));
-		n.set_building_construction_consumption(int8_t(100));
-
-		n.set_naval_spending(int8_t(sea_budget_ratio * 100.0f));
-		n.set_naval_supply_consumption(int8_t(naval_supply_consumption * 100.0f));
-		n.set_naval_reinforcement_consumption(int8_t(naval_supply_consumption * 100.0f));
-
-		n.set_administrative_spending(15);
-		n.set_subsidies_spending(3);
-
-		float max_soldiers_budget = 1.f + economy::national_budget::estimate_pop_payouts_by_income_type(state, n, culture::income_type::military);
-		float max_overseas_budget = 1.f + economy::estimate_overseas_penalty_spending_before_refund(state, n);
-
-		n.set_education_spending(int8_t(education_budget_ratio * 100.f));
-		n.set_construction_spending(int8_t(construction_budget_ratio * 100.f));
-		n.set_stockpile_spending(int8_t(stockpile_budget_ratio * 100.f));
-
-		// If State can build factories - why subsidize capitalists
-		// answer: because nation has different priorities
-		// and investments of capitalists are easy way
-		// to build consumer-oriented industry
-		// without writing additional layer of logic for national ai
-		auto rules = n.get_combined_issue_rules();
-		if(n.get_is_civilized()) {
-			if((rules & issue_rule::build_factory) == 0) {
-				n.set_domestic_investment_spending(int8_t(investments_budget_ratio * 100.f));
-			} else {
-				n.set_domestic_investment_spending(int8_t(investments_budget_ratio * 50.f));
-			}
-		} else {
-			n.set_domestic_investment_spending(int8_t(0));
-		}
-
-		float soldiers_max_ratio = 100.f * math::sqrt(soldiers_budget / max_soldiers_budget);
-		soldiers_max_ratio = std::clamp(soldiers_max_ratio, 0.f, 100.f);
-
-		float overseas_max_ratio = std::clamp(100.f * overseas_budget / max_overseas_budget, 0.f, 100.f);
-
-		n.set_tariffs_import(int8_t(10));
-		n.set_tariffs_export(int8_t(10));
-
-		float poor_militancy = (state.world.nation_get_demographics(n, demographics::poor_militancy) / std::max(1.0f, state.world.nation_get_demographics(n, demographics::poor_total))) / 10.f;
-		float mid_militancy = (state.world.nation_get_demographics(n, demographics::middle_militancy) / std::max(1.0f, state.world.nation_get_demographics(n, demographics::middle_total))) / 10.f;
-		float rich_militancy = (state.world.nation_get_demographics(n, demographics::rich_militancy) / std::max(1.0f, state.world.nation_get_demographics(n, demographics::rich_total))) / 10.f;
-
-		// don't tax pops too much
-		if((rules & issue_rule::expand_factory) != 0 || (rules & issue_rule::build_factory) != 0) {
-			// Non-lf prioritize poor people
-			int max_poor_tax = int(10.f + 25.f * (1.f - poor_militancy));
-			int max_mid_tax = int(10.f + 35.f * (1.f - mid_militancy));
-			int max_rich_tax = int(10.f + 50.f * (1.f - rich_militancy));
-			int max_social = int(100.f * poor_militancy);
-
-			// if we are not able to control capital, our taxes are not enough
-			bool enough_tax = n.get_capital().get_control_ratio() > 0.95f;
-
-			if(n.get_spending_level() < 1.0f || n.get_last_treasury() >= n.get_treasury() || !enough_tax) { // losing money
-				if(!n.get_ai_is_threatened()) {
-					n.set_military_spending(int8_t(std::max(50, n.get_military_spending() - 5)));
-				}
-				n.set_social_spending(1);
-
-				n.set_poor_tax(int8_t(std::clamp(n.get_poor_tax() + 2, 10, std::max(10, max_poor_tax))));
-				n.set_middle_tax(int8_t(std::clamp(n.get_middle_tax() + 3, 10, std::max(10, max_mid_tax))));
-				n.set_rich_tax(int8_t(std::clamp(n.get_rich_tax() + 5, 10, std::max(10, max_rich_tax))));
-			} else if(n.get_last_treasury() < n.get_treasury()) { // gaining money
-				if(n.get_ai_is_threatened()) {
-					n.set_military_spending(int8_t(std::min(100, n.get_military_spending() + 10)));
-				} else {
-					n.set_military_spending(int8_t(std::min(75, n.get_military_spending() + 10)));
-				}
-				n.set_social_spending(3);
-
-				if(enough_tax) {
-					n.set_poor_tax(int8_t(std::clamp(n.get_poor_tax() - 2, 10, std::max(10, max_poor_tax))));
-					n.set_middle_tax(int8_t(std::clamp(n.get_middle_tax() - 3, 10, std::max(10, max_mid_tax))));
-					n.set_rich_tax(int8_t(std::clamp(n.get_rich_tax() - 5, 10, std::max(10, max_rich_tax))));
-				}
-			}
-		} else {
-			int max_poor_tax = int(10.f + 30.f * (1.f - poor_militancy));
-			int max_mid_tax = int(10.f + 30.f * (1.f - mid_militancy));
-			int max_rich_tax = int(10.f + 10.f * (1.f - rich_militancy));
-			int max_social = int(20.f * poor_militancy);
-
-			// enough tax?
-			bool enough_tax = n.get_capital().get_control_ratio() > 0.95f;
-
-			// Laissez faire prioritize tax free capitalists
-			if(n.get_spending_level() < 1.0f || n.get_last_treasury() >= n.get_treasury() || !enough_tax) { // losing money
-				if(!n.get_ai_is_threatened()) {
-					n.set_military_spending(int8_t(std::max(50, n.get_military_spending() - 5)));
-				}
-				n.set_social_spending(int8_t(max_social / 2));
-
-				n.set_poor_tax(int8_t(std::clamp(n.get_poor_tax() + 5, 10, std::max(10, max_poor_tax))));
-				n.set_middle_tax(int8_t(std::clamp(n.get_middle_tax() + 3, 10, std::max(10, max_mid_tax))));
-				n.set_rich_tax(int8_t(std::clamp(n.get_rich_tax() + 2, 10, std::max(10, max_rich_tax))));
-			} else if(n.get_last_treasury() < n.get_treasury()) { // gaining money
-				if(n.get_ai_is_threatened()) {
-					n.set_military_spending(int8_t(std::min(100, n.get_military_spending() + 10)));
-				} else {
-					n.set_military_spending(int8_t(std::min(75, n.get_military_spending() + 10)));
-				}
-				n.set_social_spending(int8_t(max_social));
-
-				if(enough_tax) {
-					n.set_poor_tax(int8_t(std::clamp(n.get_poor_tax() - 5, 10, std::max(10, max_poor_tax))));
-					n.set_middle_tax(int8_t(std::clamp(n.get_middle_tax() - 3, 10, std::max(10, max_mid_tax))));
-					n.set_rich_tax(int8_t(std::clamp(n.get_rich_tax() - 2, 10, std::max(10, max_rich_tax))));
-				}
-			}
-		}
-
-		n.set_military_spending(int8_t(std::min(int8_t(soldiers_max_ratio), n.get_military_spending())));
-		n.set_overseas_spending(int8_t(overseas_max_ratio));
-
-		economy::bound_budget_settings(state, n);
+		update_budget_for_nation(state, nid, presim);
 	});
 }
 
