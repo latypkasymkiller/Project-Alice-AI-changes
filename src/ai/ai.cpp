@@ -7420,8 +7420,7 @@ void update_unit_supply_priorities_for_nation(sys::state& state, dcon::nation_id
 	military::set_supply_priority_for_navies_in_battle<command::actor::ai>(state, n, 1);
 
 	bool at_war = state.world.nation_get_is_at_war(n);
-	auto econ_mode = evaluate_war_economy_mode(state, n);
-	bool prewar = (!at_war && econ_mode == war_economy_mode::prewar_ready);
+	bool prewar = (!at_war && evaluate_war_economy_mode(state, n) == war_economy_mode::prewar_ready);
 
 	auto is_province_frontline = [&](dcon::province_id p) -> bool {
 		if(!p || province::is_sea(state, p))
@@ -7465,6 +7464,10 @@ void update_unit_supply_priorities_for_nation(sys::state& state, dcon::nation_id
 		return false;
 	};
 
+	auto is_active_front_zone = [&](dcon::province_id p) -> bool {
+		return is_province_frontline(p) || is_province_near_front(p);
+	};
+
 	for(auto a : state.world.nation_get_army_control(n)) {
 		auto ar = a.get_army();
 		if(!unit_on_ai_control(state, ar))
@@ -7483,19 +7486,27 @@ void update_unit_supply_priorities_for_nation(sys::state& state, dcon::nation_id
 
 		auto act = army_activity(ar.get_ai_activity());
 		auto loc = ar.get_location_from_army_location().id;
+		auto ai_p = ar.get_ai_province();
+		auto path = ar.get_path();
+		dcon::province_id move_dest = (path.size() > 0) ? path.at(0) : dcon::province_id{};
 		bool attacking_order = (act == army_activity::attacking
 			|| act == army_activity::attack_gathered
 			|| act == army_activity::transport_attack
 			|| act == army_activity::attack_transport
-			|| (at_war && act == army_activity::transport_guard));
+			|| (at_war && (act == army_activity::transport_guard || bool(ar.get_navy_from_army_transport()))));
 
 		military::unit_priority prio = military::unit_priority::normal_priority;
 		if(ar.get_battle_from_army_battle_participation()) {
 			prio = military::unit_priority::high_priority;
 		} else if(at_war) {
-			if(attacking_order || is_province_frontline(loc) || (ar.get_ai_province() && is_province_frontline(ar.get_ai_province()))) {
+			// Active front zone covers BOTH 1st line AND 2nd-line strike/reserve corps, plus armies marching/retreating on the front!
+			if(attacking_order
+				|| ar.get_is_retreating()
+				|| is_active_front_zone(loc)
+				|| (ai_p && is_active_front_zone(ai_p))
+				|| (move_dest && is_active_front_zone(move_dest))) {
 				prio = military::unit_priority::high_priority;
-			} else if(ar.get_is_retreating() || avg_str < 0.90f || avg_org < 0.85f || is_province_near_front(loc)) {
+			} else if(avg_str < 0.95f || avg_org < 0.90f || move_dest || act == army_activity::merging) {
 				prio = military::unit_priority::normal_priority;
 			} else {
 				prio = military::unit_priority::low_priority;
@@ -8845,6 +8856,17 @@ void war_ai_tick(sys::state& state) {
 			if(r8 != 0) {
 				advance_active_transport_fleets(state);
 			}
+		}
+	}
+
+	// 4. Keep wartime supply priorities synced daily (after guard/target assignment, splits, attacks & retreats — warring nations only)
+	for(uint32_t i = 0; i < state.world.nation_size(); ++i) {
+		dcon::nation_id n{ dcon::nation_id::value_base_t(i) };
+		if(state.world.nation_is_valid(n)
+			&& !state.world.nation_get_is_player_controlled(n)
+			&& state.world.nation_get_owned_province_count(n) > 0
+			&& state.world.nation_get_is_at_war(n)) {
+			update_unit_supply_priorities_for_nation(state, n);
 		}
 	}
 }

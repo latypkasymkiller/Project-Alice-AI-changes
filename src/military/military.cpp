@@ -10980,6 +10980,7 @@ void split_navy(sys::state& state, dcon::nation_id source, dcon::navy_id navy, s
 		auto new_u = fatten(state.world, state.world.create_navy());
 		new_u.set_controller_from_navy_control(state.world.navy_get_controller_from_navy_control(navy));
 		new_u.set_months_outside_naval_range(state.world.navy_get_months_outside_naval_range(navy));
+		new_u.set_supply_priority(state.world.navy_get_supply_priority(navy));
 
 		for(auto t : ships_to_split) {
 			state.world.ship_set_navy_from_navy_membership(t, new_u);
@@ -11054,6 +11055,7 @@ void split_army(sys::state& state, dcon::nation_id source, dcon::army_id army, s
 		new_u.set_controller_from_army_control(state.world.army_get_controller_from_army_control(army));
 		new_u.set_black_flag(state.world.army_get_black_flag(army));
 		new_u.set_dig_in(state.world.army_get_dig_in(army));
+		new_u.set_supply_priority(state.world.army_get_supply_priority(army));
 
 		for(auto t : regiments_to_split) {
 			state.world.regiment_set_army_from_army_membership(t, new_u);
