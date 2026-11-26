@@ -581,8 +581,9 @@ void build_ships(sys::state& state) {
 
 		// Depending on the strategy, the AI will prioritize different fleet size
 		auto target_naval_supply_points = calculate_desired_navy_size(state, n);
-		// Scale minimum amphibious lift with real standing army (10..30 transports = 30K..90K single-wave expeditionary lift!)
-		int32_t desired_min_transports = std::clamp(std::max(10, int32_t(n.get_active_regiments()) / 3), 10, 30);
+		// Scale amphibious lift to standing army (10..80 transports = 30K..240K single-wave lift for global maritime powers like UK/USA/Japan!)
+		// Never exceeds 1/3 of naval supply cap (above the 10-transport baseline) so the Battle Fleet keeps 67-90% of naval capacity!
+		int32_t desired_transports = std::clamp(std::max(10, int32_t(n.get_active_regiments()) / 2), 10, 80);
 
 		int32_t constructing_fleet_cap = 0;
 		if(best_transport) {
@@ -591,10 +592,9 @@ void build_ships(sys::state& state) {
 			auto supply_pts = std::max(1, state.military_definitions.unit_base_definitions[best_transport].supply_consumption_score);
 
 			for(uint32_t j = 0; j < owned_ports.size() && ongoing_naval_builds < max_concurrent_naval; ++j) {
-				bool need_by_cap = (fleet_cap_in_transports + constructing_fleet_cap) * 3 < target_naval_supply_points;
-				bool need_by_lift = (num_transports < desired_min_transports)
-					&& ((fleet_cap_in_transports + constructing_fleet_cap + supply_pts) * 2 <= std::max(target_naval_supply_points, desired_min_transports * supply_pts));
-				if(!need_by_cap && !need_by_lift)
+				bool need_transports = (num_transports < desired_transports)
+					&& (num_transports < 10 || (fleet_cap_in_transports + constructing_fleet_cap + supply_pts) * 3 <= target_naval_supply_points);
+				if(!need_transports)
 					break;
 				if((overseas_allowed || !province::is_overseas(state, owned_ports[j]))
 					&& state.world.province_get_building_level(owned_ports[j], uint8_t(economy::province_building_type::naval_base)) >= level_req
@@ -789,16 +789,31 @@ void unload_units_from_transport(sys::state& state, dcon::navy_id n) {
 }
 
 bool merge_fleet(sys::state& state, dcon::navy_id n, dcon::province_id p, dcon::nation_id owner) {
+	// Keep the Battle/Guard Fleet (0 transports) and Transport/Invasion Fleet (transports + light escort) STRICTLY SEPARATE!
+	// Transports merge ONLY with transports (consolidating 100% of lift into one massive Invasion Fleet);
+	// pure warships merge ONLY with pure warships (forming one unified Battle Fleet that never drags transports into combat!).
+	bool self_has_transports = (military::transport_capacity(state, n) > 0);
 	auto merge_target = [&]() {
 		dcon::navy_id largest;
 		int32_t largest_size = 0;
 		for(auto on : state.world.province_get_navy_location(p)) {
-			if(on.get_navy() != n && on.get_navy().get_controller_from_navy_control() == owner) {
-				auto other_mem = on.get_navy().get_navy_membership();
-				if(auto sz = int32_t(other_mem.end() - other_mem.begin()); sz > largest_size) {
-					largest =  on.get_navy().id;
-					largest_size = sz;
-				}
+			auto other = on.get_navy();
+			if(other == n
+				|| other.get_controller_from_navy_control() != owner
+				|| !unit_on_ai_control(state, other)
+				|| other.get_battle_from_navy_battle_participation()
+				|| other.get_arrival_time())
+				continue;
+			auto oact = fleet_activity(other.get_ai_activity());
+			if(oact == fleet_activity::boarding || oact == fleet_activity::transporting || oact == fleet_activity::unloading)
+				continue;
+			bool other_has_transports = (military::transport_capacity(state, other.id) > 0);
+			if(other_has_transports != self_has_transports)
+				continue;
+			auto other_mem = other.get_navy_membership();
+			if(auto sz = int32_t(other_mem.end() - other_mem.begin()); sz > largest_size) {
+				largest = other.id;
+				largest_size = sz;
 			}
 		}
 		return largest;
@@ -812,6 +827,13 @@ bool merge_fleet(sys::state& state, dcon::navy_id n, dcon::province_id p, dcon::
 }
 
 void pickup_idle_ships(sys::state& state) {
+	struct navy_split_req {
+		dcon::navy_id navy;
+		dcon::nation_id owner;
+		std::vector<dcon::ship_id> warships_to_split;
+	};
+	std::vector<navy_split_req> fleet_splits;
+
 	for(auto n : state.world.in_navy) {
 		if(n.get_battle_from_navy_battle_participation())
 			continue;
@@ -829,6 +851,52 @@ void pickup_idle_ships(sys::state& state) {
 
 		auto location = state.world.navy_get_location_from_navy_location(n);
 		auto activity = fleet_activity(state.world.navy_get_ai_activity(n));
+
+		// Separate mixed fleets at home_port into dedicated Battle/Guard Fleet (heavy warships, 0 transports)
+		// + dedicated Transport/Invasion Fleet (100% transports + light close escort)!
+		if(location == home_port
+			&& (activity == fleet_activity::unspecified || activity == fleet_activity::idle || activity == fleet_activity::merging || activity == fleet_activity::returning_to_base || activity == fleet_activity::failed_transport)
+			&& n.get_army_transport().begin() == n.get_army_transport().end()
+			&& !n.get_is_retreating()) {
+			int32_t t_count = 0;
+			std::vector<dcon::ship_id> big_warships;
+			std::vector<dcon::ship_id> light_warships;
+			for(auto s : n.get_navy_membership()) {
+				auto shp = s.get_ship();
+				auto stype = state.military_definitions.unit_base_definitions[shp.get_type()].type;
+				if(stype == military::unit_type::transport) {
+					++t_count;
+				} else if(stype == military::unit_type::big_ship) {
+					big_warships.push_back(shp.id);
+				} else {
+					light_warships.push_back(shp.id);
+				}
+			}
+			int32_t total_warships = int32_t(big_warships.size() + light_warships.size());
+			if(t_count > 0 && total_warships >= 4) {
+				// Keep a modest close escort (preferring fast light ships, up to min(t_count/3, 10)) with the Transport Fleet,
+				// and split the main Battle/Guard Fleet (all heavy big ships + surplus light ships) out permanently!
+				int32_t keep_escorts = (total_warships >= 6) ? std::min(t_count / 3, 10) : 0;
+				if(total_warships > keep_escorts + 2) {
+					int32_t split_target = total_warships - keep_escorts;
+					std::vector<dcon::ship_id> to_split;
+					to_split.reserve(size_t(split_target));
+					for(auto sid : big_warships) {
+						if(int32_t(to_split.size()) < split_target) {
+							to_split.push_back(sid);
+						}
+					}
+					for(auto sid : light_warships) {
+						if(int32_t(to_split.size()) < split_target) {
+							to_split.push_back(sid);
+						}
+					}
+					if(!to_split.empty()) {
+						fleet_splits.push_back(navy_split_req{ n.id, owner.id, std::move(to_split) });
+					}
+				}
+			}
+		}
 
 		switch(activity) {
 		case fleet_activity::unspecified:
@@ -941,21 +1009,37 @@ void pickup_idle_ships(sys::state& state) {
 				state.world.navy_set_ai_activity(n, uint8_t(fleet_activity::unspecified));
 			} else if(owner.get_is_at_war()) {
 				if(!navy_needs_repair(state, n)) {
-					bool valid_attacker = true;
+					// Keep the dedicated Transport/Invasion Fleet (tcap > 0) free at port ready for landings!
+					// Only send pure Battle/Guard Fleets (tcap == 0) out to hunt enemy fleets (fallback only if no pure battle fleet exists).
+					int32_t self_tcap = military::transport_capacity(state, n.id);
 					auto self_ships = state.world.navy_get_navy_membership(n);
 					int32_t self_sz = int32_t(self_ships.end() - self_ships.begin());
+					int32_t self_warships = self_sz - self_tcap;
+
+					bool has_dedicated_battle_fleet = false;
+					bool valid_attacker = (self_warships > 0);
 					for(auto o : owner.get_navy_control()) {
-						if(o.get_navy() != n) {
-							if(o.get_navy().get_ai_activity() == uint8_t(fleet_activity::attacking)) {
+						auto onv = o.get_navy();
+						if(military::transport_capacity(state, onv.id) == 0 && onv.get_navy_membership().begin() != onv.get_navy_membership().end()) {
+							has_dedicated_battle_fleet = true;
+						}
+						if(onv != n) {
+							if(onv.get_ai_activity() == uint8_t(fleet_activity::attacking)) {
 								valid_attacker = false;
 								break;
 							}
-							auto orange = o.get_navy().get_navy_membership();
-							if(int32_t(orange.end() - orange.begin()) >= self_sz) {
-								valid_attacker = false;
-								break;
+							if(self_tcap == 0 && military::transport_capacity(state, onv.id) == 0) {
+								auto orange = onv.get_navy_membership();
+								if(int32_t(orange.end() - orange.begin()) > self_sz
+									|| (int32_t(orange.end() - orange.begin()) == self_sz && onv.id.index() < n.id.index())) {
+									valid_attacker = false;
+									break;
+								}
 							}
 						}
+					}
+					if(self_tcap > 0 && (has_dedicated_battle_fleet || self_warships <= self_tcap * 2)) {
+						valid_attacker = false;
 					}
 					if(valid_attacker && naval_advantage(state, owner)) {
 						set_fleet_target(state, owner, state.world.navy_get_location_from_navy_location(n), n);
@@ -985,6 +1069,27 @@ void pickup_idle_ships(sys::state& state) {
 			}
 		}
 		break;
+		}
+	}
+
+	// Execute Battle Fleet / Transport Fleet splits safely outside in_navy iteration!
+	for(auto const& req : fleet_splits) {
+		if(!state.world.navy_is_valid(req.navy) || req.warships_to_split.empty())
+			continue;
+		if(state.world.navy_get_controller_from_navy_control(req.navy) != req.owner)
+			continue;
+		std::vector<dcon::ship_id> valid_ships;
+		valid_ships.reserve(req.warships_to_split.size());
+		for(auto sid : req.warships_to_split) {
+			if(state.world.ship_is_valid(sid) && state.world.ship_get_navy_from_navy_membership(sid) == req.navy) {
+				valid_ships.push_back(sid);
+			}
+		}
+		auto cur_mem = state.world.navy_get_navy_membership(req.navy);
+		int32_t cur_cnt = int32_t(cur_mem.end() - cur_mem.begin());
+		if(!valid_ships.empty() && int32_t(valid_ships.size()) < cur_cnt
+			&& military::can_split_navy<command::actor::ai>(state, req.owner, req.navy, valid_ships)) {
+			military::split_navy<command::actor::ai>(state, req.owner, req.navy, valid_ships, 0);
 		}
 	}
 }
@@ -4394,19 +4499,25 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 					? std::max(8, int32_t(float(military::supply_limit_in_province(state, n, staging_prov)) / reg_w))
 					: 12;
 				float needed_cover = 0.0f;
+				float ideal_naval_lift = 0.0f;
 				if(use_naval) {
 					if(naval_threat_regs >= 4.0f) {
 						needed_cover = std::max(10.0f, naval_threat_regs * 1.05f);
+						// When we have plenty of transports & armies (e.g. 100K in India / Britain!), pack a full overwhelming invasion wave instead of leaving transports half-empty!
+						ideal_naval_lift = std::min(float(free_tcap), std::max(needed_cover * 1.35f, float(std::min(36, target_nat_total_regs))));
 					} else if(target_nat_total_regs >= 8) {
-						// Even if the beach is >800km from enemy stacks, land a real 30-36K corps against a real country!
+						// Even if the beach is >800km from enemy stacks, land a real 30-100K corps against a real country!
 						needed_cover = std::min(float(free_tcap), std::min(12.0f, float(target_nat_total_regs) * 0.50f));
+						ideal_naval_lift = std::min(float(free_tcap), std::max(needed_cover * 1.35f, float(std::min(34, target_nat_total_regs))));
 					} else {
 						needed_cover = std::max(2.0f, naval_threat_regs * 1.25f);
+						ideal_naval_lift = needed_cover;
 					}
 				} else {
 					needed_cover = std::min(nearby_enemy_regs * (stance == ai_front_helpers::war_stance::defensive ? 0.65f : 0.45f), float(stage_sl_regs));
+					ideal_naval_lift = needed_cover;
 				}
-				size_t max_empty_stacks = use_naval ? 8 : 3;
+				size_t max_empty_stacks = use_naval ? 12 : 3;
 
 				if(!use_naval && needed_cover <= 1.0f) {
 					chosen_attackers.push_back(ready_stacks[cands[0].idx].id);
@@ -4446,15 +4557,18 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 						bool naval_quality_ok = !use_naval || needed_cover < 8.0f || chosen_has_core || float(chosen_regs_sum) >= needed_cover * 1.20f;
 						if(float(chosen_regs_sum) >= needed_cover && naval_quality_ok) {
 							odds_sufficient = true;
-							break;
+							if(!use_naval || float(chosen_regs_sum) >= ideal_naval_lift) {
+								break;
+							}
 						}
 					}
 				}
 			} else {
 				// Directly defended province: evaluate analytically against DIRECT defenders, with realistic discount for neighboring/reaction enemy reinforcements
 				float reinf_divisor = 1.0f + (use_naval ? 0.55f : 0.35f) * (nearby_enemy_regs / std::max(4.0f, direct_def_regs));
+				size_t max_def_stacks = use_naval ? 12 : 8;
 				for(auto const& c : cands) {
-					if(chosen_attackers.size() >= 8)
+					if(chosen_attackers.size() >= max_def_stacks)
 						break;
 					auto const& rs = ready_stacks[c.idx];
 					if(use_naval) {
