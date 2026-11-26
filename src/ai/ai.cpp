@@ -1218,6 +1218,180 @@ inline float adjacent_enemy_regs_excluding(sys::state const& state, dcon::nation
 	return total;
 }
 
+struct walkable_theater_map {
+	int32_t land_count = 0;
+	std::vector<uint16_t> theater_id;
+	std::vector<uint8_t> has_safe_port;
+
+	void build(sys::state& state, dcon::nation_id n, dcon::province_id extra_seed = dcon::province_id{}) {
+		uint32_t const pcount = state.world.province_size();
+		uint32_t const first_sea = uint32_t(state.province_definitions.first_sea_province.index());
+		land_count = int32_t(std::min(pcount, first_sea));
+		theater_id.assign(size_t(std::max(0, land_count)), 0);
+		has_safe_port.assign(1, 0);
+		if(land_count <= 0 || !n)
+			return;
+
+		// Deterministic seed list: our armies, capital, controlled provinces, and optional battle/target seed
+		std::vector<dcon::province_id> seeds;
+		for(auto ar : state.world.nation_get_army_control(n)) {
+			auto loc = ar.get_army().get_location_from_army_location().id;
+			if(loc && loc.index() < land_count) {
+				seeds.push_back(loc);
+			}
+		}
+		if(auto cap = state.world.nation_get_capital(n); cap && cap.index() < land_count) {
+			seeds.push_back(cap);
+		}
+		if(extra_seed && extra_seed.index() < land_count) {
+			seeds.push_back(extra_seed);
+		}
+		for(auto pc : state.world.nation_get_province_control(n)) {
+			auto p = pc.get_province().id;
+			if(p && p.index() < land_count) {
+				seeds.push_back(p);
+			}
+		}
+		std::sort(seeds.begin(), seeds.end(), [](dcon::province_id a, dcon::province_id b) {
+			return a.index() < b.index();
+		});
+		seeds.erase(std::unique(seeds.begin(), seeds.end()), seeds.end());
+
+		std::vector<dcon::province_id> queue;
+		queue.reserve(256);
+		uint16_t next_tid = 0;
+
+		for(auto seed : seeds) {
+			if(theater_id[seed.index()] != 0)
+				continue;
+			if(next_tid == uint16_t(0xFFFF))
+				break;
+			++next_tid;
+			has_safe_port.push_back(0);
+
+			theater_id[seed.index()] = next_tid;
+			queue.clear();
+			queue.push_back(seed);
+
+			for(size_t qi = 0; qi < queue.size(); ++qi) {
+				auto u = queue[qi];
+				if(state.world.province_get_is_coast(u) && province::has_safe_access_to_province(state, n, u)) {
+					has_safe_port[next_tid] = 1;
+				}
+				for(auto padj : state.world.province_get_province_adjacency(u)) {
+					if(province::is_adjacency_impassable(state, n, padj.id))
+						continue;
+					dcon::province_id v = padj.get_connected_provinces(0) == u ? padj.get_connected_provinces(1).id : padj.get_connected_provinces(0).id;
+					if(!v || v.index() >= land_count || theater_id[v.index()] != 0)
+						continue;
+					// Walk across all owned passable land where n has military access (own, allies, vassals, occupied, war enemies),
+					// without leaking across thousands of km of uncolonized wasteland!
+					if(!state.world.province_get_nation_from_province_ownership(v))
+						continue;
+					if(!province::has_access_to_province(state, n, v))
+						continue;
+					theater_id[v.index()] = next_tid;
+					queue.push_back(v);
+				}
+			}
+		}
+	}
+
+	uint16_t theater_of(dcon::province_id p) const {
+		if(!p || p.index() >= land_count)
+			return 0;
+		return theater_id[p.index()];
+	}
+
+	bool theater_has_safe_port(uint16_t tid) const {
+		return tid > 0 && size_t(tid) < has_safe_port.size() && has_safe_port[tid] != 0;
+	}
+};
+
+// Estimate enemy land reaction force able to march to a coastal naval landing beach (e.g. USA's 60K in New York reacting to a landing in Washington!)
+inline float estimate_naval_landing_threat(sys::state& state, dcon::nation_id n, dcon::province_id target_p) {
+	if(!target_p || province::is_sea(state, target_p))
+		return 0.0f;
+	uint32_t const first_sea = uint32_t(state.province_definitions.first_sea_province.index());
+	int32_t const land_count = int32_t(std::min(state.world.province_size(), first_sea));
+	if(target_p.index() >= land_count)
+		return 0.0f;
+
+	auto target_ctrl = state.world.province_get_nation_from_province_control(target_p);
+	auto target_owner = state.world.province_get_nation_from_province_ownership(target_p);
+	dcon::nation_id def_nat = target_ctrl ? target_ctrl : target_owner;
+
+	// Bounded BFS across enemy-accessible owned land up to 800 km from target_p
+	std::vector<uint8_t> visited(size_t(land_count), 0);
+	std::vector<dcon::province_id> queue;
+	queue.reserve(128);
+	visited[target_p.index()] = 1;
+	queue.push_back(target_p);
+
+	float reaction_regs = 0.0f;
+	for(size_t qi = 0; qi < queue.size(); ++qi) {
+		auto u = queue[qi];
+		if(u != target_p) {
+			float d_km = province::direct_distance_km(state, target_p, u);
+			float w = (d_km <= 450.0f) ? 1.00f : 0.60f;
+			for(auto ea : state.world.province_get_army_location(u)) {
+				auto army = ea.get_army();
+				if(army.get_is_retreating() || army.get_black_flag() || army.get_navy_from_army_transport() || army.get_battle_from_army_battle_participation())
+					continue;
+				auto ec = army.get_controller_from_army_control();
+				if(!ec || military::are_at_war(state, n, ec)) {
+					float eff = 0.0f;
+					for(auto r : army.get_army_membership()) {
+						eff += r.get_regiment().get_strength() * (0.5f + 0.5f * r.get_regiment().get_org());
+					}
+					reaction_regs += eff * w;
+				}
+			}
+		}
+
+		for(auto padj : state.world.province_get_province_adjacency(u)) {
+			if(def_nat && province::is_adjacency_impassable(state, def_nat, padj.id))
+				continue;
+			dcon::province_id v = padj.get_connected_provinces(0) == u ? padj.get_connected_provinces(1).id : padj.get_connected_provinces(0).id;
+			if(!v || v.index() >= land_count || visited[v.index()])
+				continue;
+			if(!state.world.province_get_nation_from_province_ownership(v))
+				continue;
+			if(province::direct_distance_km(state, target_p, v) > 800.0f)
+				continue;
+			if(def_nat && !province::has_access_to_province(state, def_nat, v))
+				continue;
+			visited[v.index()] = 1;
+			queue.push_back(v);
+		}
+	}
+
+	// If landing directly onto an enemy's homeland capital landmass, also account for unengaged homeland armies beyond 800 km (capped)
+	if(def_nat && military::are_at_war(state, n, def_nat)) {
+		auto def_cap = state.world.nation_get_capital(def_nat);
+		if(def_cap && state.world.province_get_connected_region_id(def_cap) == state.world.province_get_connected_region_id(target_p)) {
+			uint16_t cap_crid = state.world.province_get_connected_region_id(def_cap);
+			float far_homeland_regs = 0.0f;
+			for(auto ar : state.world.nation_get_army_control(def_nat)) {
+				auto army = ar.get_army();
+				if(army.get_is_retreating() || army.get_black_flag() || army.get_navy_from_army_transport() || army.get_battle_from_army_battle_participation())
+					continue;
+				auto aloc = army.get_location_from_army_location().id;
+				if(!aloc || aloc.index() >= land_count || visited[aloc.index()])
+					continue;
+				if(state.world.province_get_connected_region_id(aloc) == cap_crid) {
+					for(auto r : army.get_army_membership()) {
+						far_homeland_regs += r.get_regiment().get_strength() * (0.5f + 0.5f * r.get_regiment().get_org());
+					}
+				}
+			}
+			reaction_regs += std::min(20.0f, far_homeland_regs * 0.30f);
+		}
+	}
+
+	return reaction_regs;
+}
+
 struct theater_summary {
 	int32_t front_prov_count = 0;
 	int32_t front_cw_sum = 0;
@@ -1232,12 +1406,16 @@ struct theater_summary {
 inline theater_summary evaluate_theater_summary(
 	sys::state& state,
 	dcon::nation_id n,
-	uint16_t region_id,
+	walkable_theater_map const& tmap,
+	uint16_t theater_id,
 	std::vector<dcon::nation_id> const& war_allies,
 	std::vector<dcon::nation_id> const& war_enemies,
 	bool time_against_us
 ) {
 	theater_summary ts{};
+	if(theater_id == 0)
+		return ts;
+
 	int32_t min_enemy_cw = nation_base_cw(state, n);
 	for(auto e : war_enemies) {
 		min_enemy_cw = std::min(min_enemy_cw, nation_base_cw(state, e));
@@ -1257,7 +1435,7 @@ inline theater_summary evaluate_theater_summary(
 			if(army.get_black_flag() || army.get_navy_from_army_transport())
 				continue;
 			auto loc = army.get_location_from_army_location().id;
-			if(!loc || province::is_sea(state, loc) || state.world.province_get_connected_region_id(loc) != region_id)
+			if(!loc || tmap.theater_of(loc) != theater_id)
 				continue;
 			int32_t rcount = 0;
 			float eff = 0.0f;
@@ -1277,7 +1455,7 @@ inline theater_summary evaluate_theater_summary(
 		}
 		for(auto pc : state.world.nation_get_province_control(a_nat)) {
 			auto p = pc.get_province().id;
-			if(province::is_sea(state, p) || state.world.province_get_connected_region_id(p) != region_id)
+			if(!p || tmap.theater_of(p) != theater_id)
 				continue;
 			bool front = province_has_enemy_army(state, n, p);
 			if(!front) {
@@ -1296,8 +1474,6 @@ inline theater_summary evaluate_theater_summary(
 			}
 			if(front) {
 				// Real holding capacity of 1 front tile in ANY era is min(combat_width, province_supply_cap_in_regs)!
-				// In 1839 Silesia (5 tiles, supply ~11 regs, CW=30), 6 stacks of 30k fully seal the front -> continuous front!
-				// In 1836 USA-Mexico (12 tiles, 3 stacks) -> low stack & reg coverage -> Austerlitz maneuver war!
 				int32_t sl_regs = std::max(4, int32_t(float(military::supply_limit_in_province(state, n, p)) / reg_weight));
 				int32_t line_cap = std::max(4, std::min(prov_cw(state, n, p, min_enemy_cw), sl_regs));
 				++coalition_front_provs;
@@ -1319,7 +1495,7 @@ inline theater_summary evaluate_theater_summary(
 			if(army.get_is_retreating() || army.get_black_flag() || army.get_navy_from_army_transport())
 				continue;
 			auto loc = army.get_location_from_army_location().id;
-			if(!loc || province::is_sea(state, loc) || state.world.province_get_connected_region_id(loc) != region_id)
+			if(!loc || tmap.theater_of(loc) != theater_id)
 				continue;
 			for(auto r : army.get_army_membership()) {
 				ts.enemy_eff_regs += r.get_regiment().get_strength() * (0.5f + 0.5f * r.get_regiment().get_org());
@@ -1327,7 +1503,7 @@ inline theater_summary evaluate_theater_summary(
 		}
 	}
 
-	// Compare own forces against own border (AND coalition forces against coalition border) — never divide 1 nation by 15 allies' borders!
+	// Compare own forces against own border (AND coalition forces against coalition border)
 	bool own_continuous = (own_front_provs > 0)
 		&& (float(ts.our_regs) >= float(own_front_cap_sum) * 0.65f)
 		&& (ts.our_stacks >= std::max(2, int32_t(std::ceil(float(own_front_provs) * 0.70f))));
@@ -1404,13 +1580,17 @@ struct front_pin_tracker {
 		dcon::province_id excluded_target_prov,
 		bool continuous_front,
 		int32_t extra_pulled_regs = 0,
-		int32_t extra_pulled_stacks = 0
+		int32_t extra_pulled_stacks = 0,
+		bool allow_screen_breakthrough = false
 	) const {
 		if(!continuous_front)
 			return true; // Austerlitz maneuver war: never pin frontline!
 		float enemy_elsewhere = adjacent_enemy_regs_excluding(state, n, loc, excluded_target_prov);
 		if(enemy_elsewhere <= 0.1f)
 			return true; // 2nd-line reserve or no other enemy facing loc
+		// Never let a tiny <8k screening detachment freeze a full corps from advancing directly into an adjacent wargoal/empty tile!
+		if(allow_screen_breakthrough && enemy_elsewhere <= 2.5f && army_regs >= 6)
+			return true;
 		// WWI continuous front: never pull a dug-in artillery-core stack sideways off a threatened sector
 		if(army_is_core && army_dig_in > 0)
 			return false;
@@ -1451,12 +1631,16 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 	dcon::province_id cap = state.world.nation_get_capital(n);
 	float cap_throughput = cap ? std::max(1.0f, logistics::calculate_supply_throughput_in_province(state, cap, n)) : 1.0f;
 
+	// Build passable cross-border theater map (own + allied + military-access + war-enemy land, NEVER split by national ownership!)
+	ai_front_helpers::walkable_theater_map tmap;
+	tmap.build(state, n);
+
 	// Collect all our guard armies (on_guard, AI-controlled, not in battle/transport/retreat)
 	struct guard_unit {
 		dcon::army_id id;
 		dcon::province_id cur_loc;
 		dcon::province_id cur_target;
-		uint16_t region_id = 0;
+		uint16_t theater_id = 0;
 		int32_t regs = 0;
 		int32_t dig_in = 0;
 		bool is_core = false;
@@ -1476,7 +1660,7 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 		if(rcount == 0)
 			continue;
 
-		uint16_t reg_id = state.world.province_get_connected_region_id(loc);
+		uint16_t tid = tmap.theater_of(loc);
 
 		if(ar.get_ai_activity() == uint8_t(army_activity::on_guard)
 			&& !ar.get_battle_from_army_battle_participation()
@@ -1486,7 +1670,7 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 				ar.id,
 				loc,
 				ar.get_ai_province().id,
-				reg_id,
+				tid,
 				rcount,
 				int32_t(ar.get_dig_in()),
 				ai_front_helpers::army_has_backline_core(state, n, ar.id),
@@ -1502,6 +1686,7 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 	std::vector<dcon::nation_id> war_allies;
 	std::vector<dcon::nation_id> war_enemies;
 	ai_front_helpers::collect_war_sides(state, n, war_allies, war_enemies);
+	bool const time_against_us = ai_front_helpers::is_time_working_against_us(state, n);
 
 	// Lazy province status caches: 0 = unknown, 1 = false, 2 = true (evaluated ONLY on touched provinces!)
 	std::vector<uint8_t> safe_cache(land_count, 0);
@@ -1512,6 +1697,7 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 	std::vector<float> threat(land_count, 0.0f);
 	std::vector<float> nearest_enemy_days(land_count, 999.0f);
 	std::vector<uint8_t> is_wargoal_prov(land_count, 0);
+	std::vector<uint8_t> is_our_wargoal_prov(land_count, 0);
 
 	auto check_enemy_ctrl = [&](dcon::province_id p) -> bool {
 		int32_t idx = p.index();
@@ -1544,26 +1730,26 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 		return res;
 	};
 
-	// Mark our own/allied wargoal provinces we must defend (e.g. states targeted by enemies in active wars)
+	// Mark enemy wargoals (to defend) AND our offensive wargoals (to stage 2nd-line strike corps behind them!)
 	for(auto wp : state.world.nation_get_war_participant(n)) {
 		auto war = wp.get_war();
 		bool we_attack = wp.get_is_attacker();
 		for(auto wg_att : war.get_wargoals_attached()) {
 			auto wg = wg_att.get_wargoal();
 			bool wg_by_attacker = military::is_attacker(state, war, wg.get_added_by());
-			if(wg_by_attacker != we_attack) {
-				if(auto sd = wg.get_associated_state(); sd) {
-					for(auto m : sd.get_abstract_state_membership()) {
-						auto pid = m.get_province().id;
-						if(pid && pid.index() < land_count && m.get_province().get_nation_from_province_ownership() == wg.get_target_nation()) {
-							is_wargoal_prov[pid.index()] = 1;
-						}
+			bool wg_ours = (wg_by_attacker == we_attack);
+			auto& target_vec = wg_ours ? is_our_wargoal_prov : is_wargoal_prov;
+			if(auto sd = wg.get_associated_state(); sd) {
+				for(auto m : sd.get_abstract_state_membership()) {
+					auto pid = m.get_province().id;
+					if(pid && pid.index() < land_count && m.get_province().get_nation_from_province_ownership() == wg.get_target_nation()) {
+						target_vec[pid.index()] = 1;
 					}
-				} else if(auto tn = wg.get_target_nation(); tn) {
-					auto tcap = tn.get_capital().id;
-					if(tcap && tcap.index() < land_count) {
-						is_wargoal_prov[tcap.index()] = 1;
-					}
+				}
+			} else if(auto tn = wg.get_target_nation(); tn) {
+				auto tcap = tn.get_capital().id;
+				if(tcap && tcap.index() < land_count) {
+					target_vec[tcap.index()] = 1;
 				}
 			}
 		}
@@ -1757,21 +1943,40 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 		return;
 	}
 
-	// Step 3: Evaluate theater density per connected_region_id ("Austerlitz" mobile fist vs "WWI" continuous front)
+	// Step 3: Evaluate theater density per walkable theater_id ("Austerlitz" mobile fist vs "WWI" continuous front)
 	struct theater_info {
 		int32_t front_prov_count = 0;
+		int32_t total_guards = 0;
+		int32_t core_guards = 0;
+		int32_t line1_slot_count = 0;
+		int32_t line2_slot_count = 0;
+		int32_t desired_l2_cores = 0;
+		int32_t max_l1_cores = 0;
+		int32_t l1_cores_assigned = 0;
+		int32_t l2_cores_assigned = 0;
 		bool continuous_front = false;
+		ai_front_helpers::war_stance stance = ai_front_helpers::war_stance::defensive;
 		dcon::province_id fist_anchor;
 		float fist_anchor_score = -1.0f;
 	};
-	std::vector<theater_info> theaters(2);
+	std::vector<theater_info> theaters(std::max<size_t>(2, tmap.has_safe_port.size()));
 
-	auto ensure_theater = [&](uint16_t rid) -> theater_info& {
-		if(rid >= theaters.size()) {
-			theaters.resize(size_t(rid) + 1);
+	auto ensure_theater = [&](uint16_t tid) -> theater_info& {
+		if(tid >= theaters.size()) {
+			theaters.resize(size_t(tid) + 1);
 		}
-		return theaters[rid];
+		return theaters[tid];
 	};
+
+	for(auto const& g : guards) {
+		if(g.theater_id > 0) {
+			auto& th = ensure_theater(g.theater_id);
+			++th.total_guards;
+			if(g.is_core) {
+				++th.core_guards;
+			}
+		}
+	}
 
 	auto prov_reg_cap = [&](dcon::province_id p) -> int32_t {
 		int32_t sl = military::supply_limit_in_province(state, n, p);
@@ -1811,11 +2016,13 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 		uint32_t idx = uint32_t(p.index());
 		if(threat[idx] < 0.25f)
 			continue;
-		uint16_t rid = state.world.province_get_connected_region_id(p);
-		auto& th = ensure_theater(rid);
+		uint16_t tid = tmap.theater_of(p);
+		if(tid == 0)
+			continue;
+		auto& th = ensure_theater(tid);
 		++th.front_prov_count;
 
-		// Compute Austerlitz mobile fist anchor: prioritize confronting the MAIN enemy army concentration (never let a tiny 12k naval raid steal the anchor from a 90k main front!)
+		// Compute Austerlitz mobile fist anchor: prioritize confronting the MAIN enemy army concentration
 		int32_t rcap = prov_reg_cap(p);
 		if(rcap > 0) {
 			float score = threat[idx] * 3.0f + incoming_enemy_weight[idx] * 2.5f;
@@ -1830,24 +2037,26 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 		}
 	}
 
-	for(size_t rid = 0; rid < theaters.size(); ++rid) {
-		if(theaters[rid].front_prov_count > 0) {
+	for(size_t tid = 1; tid < theaters.size(); ++tid) {
+		if(theaters[tid].front_prov_count > 0) {
 			// Single source of truth with assign_targets / gather_to_battle / manage_active_battles!
-			auto ts = ai_front_helpers::evaluate_theater_summary(state, n, uint16_t(rid), war_allies, war_enemies, false);
-			theaters[rid].continuous_front = ts.continuous_front;
+			auto ts = ai_front_helpers::evaluate_theater_summary(state, n, tmap, uint16_t(tid), war_allies, war_enemies, time_against_us);
+			theaters[tid].continuous_front = ts.continuous_front;
+			theaters[tid].stance = ts.stance;
 		}
 	}
 
 	// Step 4: Build deployment slots (desired regiments, capacity, priority, echelon) for every candidate province
 	struct prov_slot {
 		dcon::province_id id;
-		uint16_t region_id = 0;
+		uint16_t theater_id = 0;
 		uint8_t line = 0; // 1, 2, 3
 		int32_t max_regs = 0;
 		int32_t desired_regs = 0;
 		int32_t assigned_regs = 0;
 		int32_t assigned_cores = 0;
 		float priority = 0.0f;
+		bool near_our_wargoal = false;
 	};
 	std::vector<prov_slot> slots;
 	std::vector<int32_t> prov_to_slot(land_count, -1);
@@ -1856,26 +2065,49 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 		uint32_t idx = uint32_t(p.index());
 		if(prov_to_slot[idx] >= 0)
 			return prov_to_slot[idx];
+		uint16_t tid = tmap.theater_of(p);
+		if(tid == 0)
+			return -1;
 		int32_t rcap = prov_reg_cap(p);
 		if(rcap <= 0)
 			return -1;
 		int32_t pre_used = count_preoccupied_regs(p);
 		int32_t sidx = int32_t(slots.size());
 		prov_to_slot[idx] = sidx;
-		slots.push_back(prov_slot{ p, state.world.province_get_connected_region_id(p), line, rcap, 0, pre_used, 0, 0.0f });
+		slots.push_back(prov_slot{ p, tid, line, rcap, 0, pre_used, 0, 0.0f, false });
+		auto& th = ensure_theater(tid);
+		if(line == 1) {
+			++th.line1_slot_count;
+		} else if(line == 2) {
+			++th.line2_slot_count;
+		}
 		return sidx;
 	};
 
-	// Populate 1st-line slots + spill excess threat into 2nd/3rd-line reserve hubs
+	// Populate 1st-line slots + stage 2nd-line reserve & offensive strike hubs behind the front!
 	for(auto p1 : line1_provs) {
 		uint32_t idx = uint32_t(p1.index());
 		if(threat[idx] < 0.20f)
 			continue;
-		uint16_t rid = state.world.province_get_connected_region_id(p1);
-		auto const& th = ensure_theater(rid);
+		uint16_t tid = tmap.theater_of(p1);
+		if(tid == 0)
+			continue;
+		auto const& th = ensure_theater(tid);
 		int32_t sidx = add_or_get_slot(p1, 1);
 		if(sidx < 0)
 			continue;
+
+		bool adj_our_wg = false;
+		for(auto padj : state.world.province_get_province_adjacency(p1)) {
+			if(province::is_adjacency_impassable(state, n, padj.id))
+				continue;
+			dcon::province_id other = padj.get_connected_provinces(0) == p1 ? padj.get_connected_provinces(1).id : padj.get_connected_provinces(0).id;
+			if(other && other.index() < land_count && is_our_wargoal_prov[other.index()]) {
+				adj_our_wg = true;
+				break;
+			}
+		}
+		slots[size_t(sidx)].near_our_wargoal = adj_our_wg;
 
 		int32_t cw = ai_front_helpers::prov_cw(state, n, p1, min_enemy_cw);
 		float stock_bonus = ai_front_helpers::province_stockpile_importance(state, p1);
@@ -1897,10 +2129,11 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 			slots[size_t(sidx)].desired_regs = want1;
 			slots[size_t(sidx)].priority = (threat[idx] + incoming_enemy_weight[idx] * 2.5f + 2.0f) * hold_mult;
 
-			// Spill heavy threat beyond 1st line into adjacent 2nd-line reserve hubs (echeloned defense in depth!)
+			// Always stage 2nd-line reserve & offensive artillery strike hubs behind active continuous fronts (especially behind our wargoal!)
 			float excess_threat = std::max(0.0f, threat[idx] * 1.15f - float(want1));
-			if(excess_threat > 3.0f || threat[idx] >= float(cw) * 1.2f) {
-				float spill = std::max(excess_threat, threat[idx] * 0.45f);
+			bool want_l2_hub = (excess_threat > 2.0f) || (threat[idx] >= 3.0f) || adj_our_wg || (th.stance != ai_front_helpers::war_stance::defensive);
+			if(want_l2_hub) {
+				float spill = std::max({ excess_threat, threat[idx] * 0.50f, adj_our_wg ? 12.0f : 5.0f });
 				std::vector<dcon::province_id> adj_l2;
 				for(auto padj : state.world.province_get_province_adjacency(p1)) {
 					if(province::is_adjacency_impassable(state, n, padj.id))
@@ -1918,20 +2151,21 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 							float rr = float(state.world.province_get_building_level(p2, uint8_t(economy::province_building_type::railroad)));
 							float tp = logistics::calculate_supply_throughput_in_province(state, p2, n);
 							float hub_bonus = 1.0f + rr * 0.10f + std::min(0.5f, tp / std::max(1.0f, cap_throughput) * 0.25f);
-							slots[size_t(s2)].desired_regs = std::min(slots[size_t(s2)].max_regs, slots[size_t(s2)].desired_regs + int32_t(std::ceil(per_l2)));
-							slots[size_t(s2)].priority += per_l2 * 0.65f * hub_bonus;
+							if(adj_our_wg) {
+								slots[size_t(s2)].near_our_wargoal = true;
+								hub_bonus *= 1.45f;
+							}
+							slots[size_t(s2)].desired_regs = std::min(slots[size_t(s2)].max_regs, slots[size_t(s2)].desired_regs + std::max(4, int32_t(std::ceil(per_l2))));
+							slots[size_t(s2)].priority += per_l2 * 0.70f * hub_bonus;
 						}
 					}
 				}
 			}
 		} else {
 			// Austerlitz low-density maneuver war (NO ZoC!):
-			// 1. Every threatened front sector gets a slot PROPORTIONAL to its real enemy weight (a 12k raid asks for ~5-8 regs, NOT the entire army; a 90k main front stays strongly held!)
-			// 2. Concentrate surplus mobile fist around fist_anchor (facing the main enemy army) and its immediate neighbors!
 			if(p1 == th.fist_anchor) {
 				slots[size_t(sidx)].desired_regs = slots[size_t(sidx)].max_regs;
 				slots[size_t(sidx)].priority = std::max(slots[size_t(sidx)].priority, (threat[idx] + incoming_enemy_weight[idx] * 2.5f + 8.0f) * strategic_mult * 1.8f);
-				// Put overflow of the mobile fist right next to the anchor (1 march away so it joins the decisive battle!)
 				for(auto padj : state.world.province_get_province_adjacency(p1)) {
 					if(province::is_adjacency_impassable(state, n, padj.id))
 						continue;
@@ -1944,11 +2178,33 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 						}
 					}
 				}
-			} else if(threat[idx] >= 0.75f || incoming_enemy_weight[idx] > 0.0f || p1 == cap || is_wargoal_prov[idx]) {
+			} else if(threat[idx] >= 0.75f || incoming_enemy_weight[idx] > 0.0f || p1 == cap || is_wargoal_prov[idx] || adj_our_wg) {
 				int32_t prop_want = std::min(slots[size_t(sidx)].max_regs, std::max(3, int32_t(std::ceil(std::max(threat[idx], incoming_enemy_weight[idx]) * 1.15f))));
 				slots[size_t(sidx)].desired_regs = std::max(slots[size_t(sidx)].desired_regs, prop_want);
-				slots[size_t(sidx)].priority = std::max(slots[size_t(sidx)].priority, (threat[idx] + incoming_enemy_weight[idx] * 2.5f) * strategic_mult);
+				slots[size_t(sidx)].priority = std::max(slots[size_t(sidx)].priority, (threat[idx] + incoming_enemy_weight[idx] * 2.5f + (adj_our_wg ? 4.0f : 0.0f)) * strategic_mult);
 			}
+		}
+	}
+
+	// Compute 2nd-line Artillery Strike Corps allocation per continuous-front theater!
+	// Never starve Line 1 of stacks (requires total_guards > line1_slot_count), while keeping 25-33% of artillery-core stacks on Line 2
+	// so offensives can launch with full artillery + recon + engineers WITHOUT pulling artillery off Line 1 and exposing the front!
+	for(size_t tid = 1; tid < theaters.size(); ++tid) {
+		auto& th = theaters[tid];
+		if(th.continuous_front && th.line2_slot_count > 0 && th.total_guards > th.line1_slot_count && th.core_guards >= 3) {
+			int32_t want_l2 = 0;
+			if(th.stance == ai_front_helpers::war_stance::active_offense) {
+				want_l2 = std::max(1, th.core_guards / 3);
+			} else if(th.stance == ai_front_helpers::war_stance::cautious_offense) {
+				want_l2 = std::max(1, th.core_guards / 4);
+			} else {
+				want_l2 = (th.core_guards > th.line1_slot_count) ? (th.core_guards - th.line1_slot_count) : (th.core_guards >= 5 ? 1 : 0);
+			}
+			th.desired_l2_cores = std::min(want_l2, th.total_guards - th.line1_slot_count);
+			th.max_l1_cores = std::max(1, th.core_guards - th.desired_l2_cores);
+		} else {
+			th.desired_l2_cores = 0;
+			th.max_l1_cores = th.core_guards;
 		}
 	}
 
@@ -1975,25 +2231,47 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 	if(slots.empty())
 		return;
 
-	// Step 5: Anti-ping-pong pass 1 — lock dug-in 1st-line guards onto their current threatened province so they keep dig_in!
-	for(auto& g : guards) {
+	// Step 5: Anti-ping-pong pass 1 — lock dug-in 1st-line guards onto highest-priority threatened provinces first,
+	// leaving up to desired_l2_cores lowest-priority core stacks free to form 2nd-line Strike Corps while infantry seals their tiles!
+	std::vector<size_t> lock_order;
+	lock_order.reserve(guards.size());
+	for(size_t gi = 0; gi < guards.size(); ++gi) {
+		auto const& g = guards[gi];
 		if(g.dig_in > 0 && g.cur_loc && g.cur_loc.index() < land_count) {
 			int32_t sidx = prov_to_slot[g.cur_loc.index()];
-			if(sidx >= 0 && slots[size_t(sidx)].line == 1
-				&& slots[size_t(sidx)].priority > 1.0f
-				&& slots[size_t(sidx)].assigned_regs + g.regs <= slots[size_t(sidx)].max_regs) {
-				g.assigned = true;
-				slots[size_t(sidx)].assigned_regs += g.regs;
-				if(g.is_core) {
-					slots[size_t(sidx)].assigned_cores += 1;
-				}
-				state.world.army_set_ai_province(g.id, g.cur_loc);
+			if(sidx >= 0 && slots[size_t(sidx)].line == 1 && slots[size_t(sidx)].priority > 1.0f) {
+				lock_order.push_back(gi);
 			}
 		}
 	}
+	std::sort(lock_order.begin(), lock_order.end(), [&](size_t a, size_t b) {
+		float pa = slots[size_t(prov_to_slot[guards[a].cur_loc.index()])].priority;
+		float pb = slots[size_t(prov_to_slot[guards[b].cur_loc.index()])].priority;
+		if(pa != pb)
+			return pa > pb;
+		return guards[a].id.index() < guards[b].id.index();
+	});
+	for(size_t gi : lock_order) {
+		auto& g = guards[gi];
+		int32_t sidx = prov_to_slot[g.cur_loc.index()];
+		auto& sl = slots[size_t(sidx)];
+		auto& th = ensure_theater(sl.theater_id);
+		if(g.is_core && th.desired_l2_cores > 0 && th.l1_cores_assigned >= th.max_l1_cores) {
+			continue; // Leave lowest-priority core stack free to stage as a 2nd-line Strike Corps!
+		}
+		if(sl.assigned_regs + g.regs <= sl.max_regs) {
+			g.assigned = true;
+			sl.assigned_regs += g.regs;
+			if(g.is_core) {
+				sl.assigned_cores += 1;
+				++th.l1_cores_assigned;
+			}
+			state.world.army_set_ai_province(g.id, g.cur_loc);
+		}
+	}
 
-	// Step 6: Assign remaining guards — Artillery-core stacks first to 1st line, then infantry reserves to gaps & 2nd/3rd line!
-	// Deterministic sort: core stacks first, larger stacks first, non-dug-in before dug-in, tie-break by id
+	// Step 6: Assign remaining guards — Artillery-core stacks split cleanly between hottest Line 1 tiles AND Line 2 Offensive Strike Corps,
+	// then pure-infantry stacks seal every remaining empty Line 1 tile + back up Line 2/3!
 	std::sort(guards.begin(), guards.end(), [](guard_unit const& a, guard_unit const& b) {
 		if(a.is_core != b.is_core) return a.is_core > b.is_core;
 		if(a.regs != b.regs) return a.regs > b.regs;
@@ -2004,6 +2282,14 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 		if(g.assigned)
 			continue;
 
+		bool assign_as_l2_strike = false;
+		if(g.is_core && g.theater_id > 0 && size_t(g.theater_id) < theaters.size()) {
+			auto const& gth = theaters[g.theater_id];
+			if(gth.desired_l2_cores > 0 && gth.l1_cores_assigned >= gth.max_l1_cores && gth.l2_cores_assigned < gth.desired_l2_cores) {
+				assign_as_l2_strike = true;
+			}
+		}
+
 		int32_t best_slot = -1;
 		float best_score = -1e9f;
 
@@ -2011,9 +2297,9 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 			auto const& sl = slots[si];
 			if(sl.desired_regs <= 0 && sl.priority <= 0.0f)
 				continue;
-			// Strongly prefer same connected land theater (avoid impossible sea walks unless no land slot exists)
-			bool same_region = (sl.region_id == g.region_id);
-			if(!same_region && !state.world.army_get_black_flag(g.id)) {
+			// Strongly prefer same walkable theater (seamlessly bridges owned + allied + occupied land!)
+			bool same_theater = (sl.theater_id == g.theater_id) && (g.theater_id != 0);
+			if(!same_theater && !state.world.army_get_black_flag(g.id)) {
 				continue;
 			}
 			// Strictly respect province supply limit outside battle (0% attrition — never stack over max_regs!)
@@ -2024,18 +2310,29 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 			int32_t deficit = std::max(0, sl.desired_regs - sl.assigned_regs);
 			float need_factor = deficit > 0
 				? (1.0f + float(std::min(deficit, g.regs)) / float(std::max(1, g.regs)))
-				: 0.20f; // overflow reserve staging if all primary deficits filled
+				: 0.25f;
 
-			// Role fit: artillery-core stacks strongly prefer 1st line without a core stack yet; pure infantry reserves fill empty 1st-line holes or stage on 2nd/3rd line!
+			// Role fit:
+			// - Frontline core stacks -> hottest Line 1 sectors without a core stack yet
+			// - Designated 2nd-line Strike Corps -> Line 2 hubs closest to our offensive wargoal (ready to attack with artillery without exposing Line 1!)
+			// - Pure infantry stacks -> immediately seal any empty Line 1 tile (2.40x), then reinforce Line 2/3!
 			float role_mult = 1.0f;
-			if(sl.line == 1) {
-				if(g.is_core) {
-					role_mult = (sl.assigned_cores == 0) ? 1.80f : 1.10f;
+			if(assign_as_l2_strike) {
+				if(sl.line == 2) {
+					role_mult = (sl.assigned_cores == 0 ? 2.80f : 1.70f) * (sl.near_our_wargoal ? 1.40f : 1.0f);
+				} else if(sl.line == 3) {
+					role_mult = 0.85f;
 				} else {
-					role_mult = (sl.assigned_regs == 0) ? 1.45f : 0.75f;
+					role_mult = 0.45f;
+				}
+			} else if(sl.line == 1) {
+				if(g.is_core) {
+					role_mult = (sl.assigned_cores == 0) ? 1.85f : 1.05f;
+				} else {
+					role_mult = (sl.assigned_regs == 0) ? 2.40f : 0.75f;
 				}
 			} else if(sl.line == 2) {
-				role_mult = g.is_core ? 0.80f : 1.35f;
+				role_mult = g.is_core ? 0.85f : 1.35f;
 			} else {
 				role_mult = g.is_core ? 0.55f : 1.05f;
 			}
@@ -2059,13 +2356,20 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 
 		if(best_slot >= 0) {
 			g.assigned = true;
-			slots[size_t(best_slot)].assigned_regs += g.regs;
+			auto& chosen_sl = slots[size_t(best_slot)];
+			chosen_sl.assigned_regs += g.regs;
 			if(g.is_core) {
-				slots[size_t(best_slot)].assigned_cores += 1;
+				chosen_sl.assigned_cores += 1;
+				auto& cth = ensure_theater(chosen_sl.theater_id);
+				if(chosen_sl.line == 1) {
+					++cth.l1_cores_assigned;
+				} else if(chosen_sl.line == 2) {
+					++cth.l2_cores_assigned;
+				}
 			}
-			state.world.army_set_ai_province(g.id, slots[size_t(best_slot)].id);
+			state.world.army_set_ai_province(g.id, chosen_sl.id);
 		} else {
-			// Safe supply-respecting fallback inside the guard's own connected region (e.g., quiet homeland during a colonial front, or overflow beyond front supply limits)
+			// Safe supply-respecting fallback inside the guard's own walkable theater
 			dcon::province_id safe_rear_prov;
 			float best_rear_score = -1e9f;
 			dcon::province_id empty_max_prov;
@@ -2075,7 +2379,7 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 				auto rp = pc.get_province().id;
 				if(!rp || rp.index() >= land_count)
 					continue;
-				if(state.world.province_get_connected_region_id(rp) != g.region_id)
+				if(tmap.theater_of(rp) != g.theater_id)
 					continue;
 				if(!check_safe(rp))
 					continue;
@@ -2598,20 +2902,22 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 		}
 	}
 
-	uint16_t p_region = state.world.province_get_connected_region_id(p);
+	ai_front_helpers::walkable_theater_map tmap;
+	tmap.build(state, n, p);
+	uint16_t p_theater = tmap.theater_of(p);
 	bool continuous_front = false;
-	if(at_war) {
+	if(at_war && p_theater != 0) {
 		std::vector<dcon::nation_id> war_allies;
 		std::vector<dcon::nation_id> war_enemies;
 		ai_front_helpers::collect_war_sides(state, n, war_allies, war_enemies);
-		auto ts = ai_front_helpers::evaluate_theater_summary(state, n, p_region, war_allies, war_enemies, false);
+		auto ts = ai_front_helpers::evaluate_theater_summary(state, n, tmap, p_theater, war_allies, war_enemies, false);
 		continuous_front = ts.continuous_front;
 	}
 
 	// Size battle commitment to the ACTUAL enemy size in this battle (never send 180k against a 12k landing just because 1836 CW == 30!)
 	int32_t needed_front = std::min(cw, std::max(4, enemy_regs_here + 4));
 	int32_t target_regs = std::min(cw * 2, std::max(needed_front + 4, int32_t(std::ceil(float(enemy_regs_here) * 1.65f)) + 3));
-	if(friendly_regs_here >= target_regs)
+	if(friendly_regs_here >= target_regs || p_theater == 0)
 		return;
 
 	ai_front_helpers::front_pin_tracker pin_tracker;
@@ -2645,7 +2951,7 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 		auto location = army.get_location_from_army_location().id;
 		if(!location || location == p || province::is_sea(state, location))
 			continue;
-		if(state.world.province_get_connected_region_id(location) != p_region)
+		if(tmap.theater_of(location) != p_theater)
 			continue;
 		float dist_km = province::direct_distance_km(state, location, p);
 		float max_gather_km = continuous_front ? 400.0f : 600.0f;
@@ -3345,17 +3651,26 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		return;
 
 	bool is_at_war = state.world.nation_get_is_at_war(n);
+	uint32_t const first_sea = uint32_t(state.province_definitions.first_sea_province.index());
+	int32_t const land_count = int32_t(std::min(state.world.province_size(), first_sea));
+	if(land_count <= 0)
+		return;
+
+	// Build passable cross-border theater map (own + allied + occupied + war-enemy land — NEVER split at national borders!)
+	ai_front_helpers::walkable_theater_map tmap;
+	tmap.build(state, n);
 
 	struct ready_stack {
 		dcon::army_id id;
 		dcon::province_id loc;
-		uint16_t region_id = 0;
+		uint16_t theater_id = 0;
 		int32_t regs = 0;
 		int32_t dig_in = 0;
 		bool is_core = false;
 		bool assigned = false;
 	};
 	std::vector<ready_stack> ready_stacks;
+	std::vector<uint8_t> already_targeted(size_t(land_count), 0);
 	bool active_naval_invasion = false;
 
 	for(auto ar : state.world.nation_get_army_control(n)) {
@@ -3365,6 +3680,15 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		army_activity activity = army_activity(army.get_ai_activity());
 		if(activity == army_activity::attack_transport || activity == army_activity::transport_attack) {
 			active_naval_invasion = true;
+		}
+		if(activity == army_activity::attacking
+			|| activity == army_activity::attack_gathered
+			|| activity == army_activity::attack_transport
+			|| activity == army_activity::transport_attack) {
+			auto tp = army.get_ai_province().id;
+			if(tp && tp.index() < land_count) {
+				already_targeted[tp.index()] = 1;
+			}
 		}
 		if(army.get_battle_from_army_battle_participation()
 			|| army.get_navy_from_army_transport()
@@ -3385,7 +3709,7 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		ready_stacks.push_back(ready_stack{
 			army.id,
 			loc,
-			state.world.province_get_connected_region_id(loc),
+			tmap.theater_of(loc),
 			rcount,
 			int32_t(army.get_dig_in()),
 			ai_front_helpers::army_has_backline_core(state, n, army.id),
@@ -3415,25 +3739,25 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		pin_tracker.init_for_nation(state, n);
 	}
 
-	// Cache theater mode (Austerlitz vs WWI) and war stance per connected_region_id
+	// Cache theater mode (Austerlitz vs WWI) and war stance per walkable theater_id
 	std::vector<std::pair<uint16_t, ai_front_helpers::theater_summary>> theater_cache;
-	auto get_theater = [&](uint16_t rid) -> ai_front_helpers::theater_summary const& {
+	auto get_theater = [&](uint16_t tid) -> ai_front_helpers::theater_summary const& {
 		for(auto const& kv : theater_cache) {
-			if(kv.first == rid)
+			if(kv.first == tid)
 				return kv.second;
 		}
 		ai_front_helpers::theater_summary ts{};
-		if(is_at_war) {
-			ts = ai_front_helpers::evaluate_theater_summary(state, n, rid, war_allies, war_enemies, time_against_us);
+		if(is_at_war && tid != 0) {
+			ts = ai_front_helpers::evaluate_theater_summary(state, n, tmap, tid, war_allies, war_enemies, time_against_us);
 		} else {
 			ts.continuous_front = false;
 			ts.stance = ai_front_helpers::war_stance::active_offense;
 		}
-		theater_cache.push_back({ rid, ts });
+		theater_cache.push_back({ tid, ts });
 		return theater_cache.back().second;
 	};
 
-	// Precompute global force ratio for overseas expeditions where target_region has no friendly armies yet
+	// Precompute global force ratio for overseas expeditions where target_p is unreachable by land
 	float global_friendly_eff = 0.0f;
 	float global_enemy_eff = 0.0f;
 	if(is_at_war) {
@@ -3447,11 +3771,9 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 	float const global_ratio = global_friendly_eff / std::max(1.0f, global_enemy_eff);
 
 	// Mark our wargoals, enemy-held enemy wargoals (to stop enemy ticking WS), and strategic objective anchors
-	uint32_t const first_sea = uint32_t(state.province_definitions.first_sea_province.index());
-	int32_t const land_count = int32_t(std::min(state.world.province_size(), first_sea));
-	std::vector<uint8_t> is_our_wargoal(land_count, 0);
-	std::vector<uint8_t> is_enemy_held_wargoal(land_count, 0);
-	std::vector<uint8_t> seen_target(land_count, 0);
+	std::vector<uint8_t> is_our_wargoal(size_t(land_count), 0);
+	std::vector<uint8_t> is_enemy_held_wargoal(size_t(land_count), 0);
+	std::vector<uint8_t> seen_target(size_t(land_count), 0);
 	std::vector<dcon::province_id> strategic_goals;
 
 	auto add_strategic_goal = [&](dcon::province_id gp) {
@@ -3507,9 +3829,11 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		}
 	}
 
-	auto has_stack_in_region = [&](uint16_t rid) -> bool {
+	auto has_stack_in_theater = [&](uint16_t tid) -> bool {
+		if(tid == 0)
+			return false;
 		for(auto const& rs : ready_stacks) {
-			if(rs.region_id == rid)
+			if(rs.theater_id == tid)
 				return true;
 		}
 		return false;
@@ -3517,24 +3841,29 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 
 	struct army_target {
 		dcon::province_id location;
-		uint16_t region_id = 0;
+		uint16_t theater_id = 0;
 		float score = 0.0f;
 		float enemy_avg_dig = 0.0f;
 		bool adjacent_to_friendly = false;
 		bool is_rebel_or_liberation = false;
 		bool is_besieged_home = false;
 		bool is_coastal = false;
-		bool has_same_region_stack = false;
+		bool has_same_theater_stack = false;
 	};
 	std::vector<army_target> potential_targets;
 
 	auto add_target = [&](dcon::province_id p, bool liberation, bool besieged_home) {
-		if(!p || p.index() >= land_count || seen_target[p.index()])
+		if(!p || p.index() >= land_count || seen_target[p.index()] || already_targeted[p.index()])
 			return;
 		seen_target[p.index()] = 1;
 
-		uint16_t rid = state.world.province_get_connected_region_id(p);
-		bool same_reg = has_stack_in_region(rid);
+		// Active battles are managed daily by manage_active_battles (do not treat an active battle tile as an empty target!)
+		auto local_battles = state.world.province_get_land_battle_location(p);
+		if(local_battles.begin() != local_battles.end())
+			return;
+
+		uint16_t tid = tmap.theater_of(p);
+		bool same_theater = has_stack_in_theater(tid);
 		bool coastal = state.world.province_get_is_coast(p);
 
 		// Respect Project Alice's 1-province logistics rule: check if p borders supplied friendly/allied territory
@@ -3552,27 +3881,27 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		}
 
 		// Filter unreachable targets early:
-		// Land advance requires depth-1 supply corridor (adj_friendly) OR liberation inside our region.
-		// Overseas naval invasion requires coastal province (ports supply the beachhead once occupied!).
-		bool land_viable = same_reg && (adj_friendly || liberation);
-		bool naval_viable = coastal && is_at_war && has_naval_adv && free_tcap > 0 && !active_naval_invasion && (!same_reg || !adj_friendly);
+		// Land advance requires same walkable theater (USA<->Canada, RUS<->Krakow/Austria!) + depth-1 supply corridor (or liberation).
+		// Overseas naval invasion requires coastal province when no land route exists.
+		bool land_viable = same_theater && (adj_friendly || liberation);
+		bool naval_viable = coastal && is_at_war && has_naval_adv && free_tcap > 0 && !active_naval_invasion && (!same_theater || !adj_friendly);
 		if(!land_viable && !naval_viable)
 			return;
 
 		potential_targets.push_back(army_target{
 			p,
-			rid,
+			tid,
 			0.0f,
 			0.0f,
 			adj_friendly,
 			liberation,
 			besieged_home,
 			coastal,
-			same_reg
+			same_theater
 		});
 	};
 
-	// 1. Own provinces occupied by rebels/enemies OR actively besieged by a hostile army (fixes Washington siege bug!)
+	// 1. Own provinces occupied by rebels/enemies OR actively besieged by a hostile army
 	for(auto o : state.world.nation_get_province_ownership(n)) {
 		auto p = o.get_province();
 		auto ctrl = p.get_nation_from_province_control();
@@ -3583,7 +3912,7 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		}
 	}
 
-	// 2. War-ally occupied or actively besieged provinces (in regions where we have armies or naval reach)
+	// 2. War-ally occupied or actively besieged provinces (in theaters where we have armies or naval reach)
 	if(is_at_war) {
 		for(auto a_nat : war_allies) {
 			if(a_nat == n)
@@ -3635,12 +3964,12 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 
 		float value = 2.0f + float(vp) * 4.0f;
 		if(is_our_wargoal[p.index()] || is_enemy_held_wargoal[p.index()]) {
-			value += 36.0f + float(vp) * 2.5f;
+			value += 62.0f + float(vp) * 2.5f;
 		}
 		if(p == our_cap) {
 			value += 55.0f;
 		} else if(owner && owner != n && state.world.nation_get_capital(owner) == p) {
-			value += 32.0f;
+			value += 28.0f;
 		}
 		// Capturing or defending a state capital government stockpile
 		value += ai_front_helpers::province_stockpile_importance(state, p) * 16.0f;
@@ -3653,11 +3982,11 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 			}
 		}
 
-		// Directional pull along depth-1 land corridor toward strategic goals in the same region
-		if(pt.adjacent_to_friendly && !strategic_goals.empty()) {
+		// Directional pull along depth-1 land corridor toward strategic goals in the same walkable theater
+		if(pt.adjacent_to_friendly && pt.theater_id != 0 && !strategic_goals.empty()) {
 			float best_gdist_km = 1e9f;
 			for(auto gp : strategic_goals) {
-				if(state.world.province_get_connected_region_id(gp) == pt.region_id) {
+				if(tmap.theater_of(gp) == pt.theater_id) {
 					float gd = province::direct_distance_km(state, p, gp);
 					if(gd < best_gdist_km)
 						best_gdist_km = gd;
@@ -3689,10 +4018,10 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 			}
 		}
 
-		// Real time cost: march days in km (same region) vs boarding + sea transit overhead (overseas)
+		// Real time cost: march days in km (same walkable theater) vs boarding + sea transit overhead (overseas)
 		float min_km = 1e9f;
 		for(auto const& rs : ready_stacks) {
-			if(pt.has_same_region_stack && rs.region_id != pt.region_id)
+			if(pt.has_same_theater_stack && rs.theater_id != pt.theater_id)
 				continue;
 			float km = province::direct_distance_km(state, rs.loc, p);
 			if(km < min_km)
@@ -3700,7 +4029,7 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		}
 		if(min_km > 1e8f)
 			min_km = 2000.0f;
-		float est_days = (pt.has_same_region_stack && (pt.adjacent_to_friendly || pt.is_rebel_or_liberation))
+		float est_days = (pt.has_same_theater_stack && (pt.adjacent_to_friendly || pt.is_rebel_or_liberation))
 			? std::max(3.0f, min_km / land_km_per_day)
 			: (28.0f + min_km / sea_km_per_day);
 
@@ -3732,17 +4061,17 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 			continue;
 		++evaluated_targets;
 
-		bool use_land = pt.has_same_region_stack && (pt.adjacent_to_friendly || pt.is_rebel_or_liberation);
+		bool use_land = pt.has_same_theater_stack && (pt.adjacent_to_friendly || pt.is_rebel_or_liberation);
 		bool use_naval = !use_land && pt.is_coastal && is_at_war && has_naval_adv && free_tcap > 0 && !active_naval_invasion;
 		if(!use_land && !use_naval)
 			continue;
 
-		auto const& target_theater = get_theater(pt.region_id);
+		auto const target_theater = get_theater(pt.theater_id);
 		bool is_wg = (is_our_wargoal[target_p.index()] != 0) || (is_enemy_held_wargoal[target_p.index()] != 0);
 		auto target_owner = state.world.province_get_nation_from_province_ownership(target_p);
 		bool is_enemy_cap = target_owner && target_owner != n && state.world.nation_get_capital(target_owner) == target_p;
 
-		// Separate DIRECT defenders sitting on target_p from 1-hop neighboring enemies (who arrive later & WITHOUT target_p's dig-in!)
+		// Separate DIRECT defenders sitting on target_p from neighboring enemies (who arrive later & WITHOUT target_p's dig-in!)
 		ai_battle_eval::collect_enemy_defenders_at(state, target_p, n, direct_defenders, false);
 		bool has_direct_defenders = !direct_defenders.empty();
 		float direct_def_regs = 0.0f;
@@ -3754,11 +4083,18 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		float nearby_enemy_regs = is_at_war
 			? ai_front_helpers::adjacent_enemy_regs_excluding(state, n, target_p, dcon::province_id{})
 			: 0.0f;
+		// For amphibious invasions, check enemy land reaction forces within 800 km (e.g. USA's 60K in NY reacting to a landing on Washington!)
+		float naval_threat_regs = use_naval
+			? ai_front_helpers::estimate_naval_landing_threat(state, n, target_p)
+			: 0.0f;
+		if(use_naval && naval_threat_regs > nearby_enemy_regs) {
+			nearby_enemy_regs = naval_threat_regs;
+		}
 
 		// Enforce Strategic War Stance + Theater Mode rules
 		ai_front_helpers::war_stance stance = target_theater.stance;
-		if(use_naval && !pt.has_same_region_stack) {
-			// Overseas expedition (e.g. USA vs Japan/Philippines): driven by ticking WS pressure & global strength
+		if(use_naval && !pt.has_same_theater_stack) {
+			// Overseas expedition (e.g. UK vs Liberia, USA vs Japan/Philippines): driven by ticking WS pressure & global strength
 			if(time_against_us || is_wg || pt.is_rebel_or_liberation) {
 				stance = (global_ratio >= 1.15f) ? ai_front_helpers::war_stance::active_offense : ai_front_helpers::war_stance::cautious_offense;
 			} else if(global_ratio >= 1.25f) {
@@ -3775,21 +4111,25 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 					continue;
 			} else {
 				// Strategic defense (both WWI & Austerlitz):
-				// ALWAYS allow liberating own/allied tiles, seizing UNDEFENDED enemy border tiles (e.g., empty Silesia!), or smashing unentrenched overextensions!
+				// ALWAYS allow liberating own/allied tiles, seizing UNDEFENDED enemy border tiles, or smashing unentrenched overextensions!
 				bool free_border_grab = !has_direct_defenders && pt.adjacent_to_friendly;
 				bool unentrenched_counter = has_direct_defenders && pt.enemy_avg_dig < 1.0f;
 				if(!pt.is_rebel_or_liberation && !free_border_grab && !unentrenched_counter)
 					continue;
 			}
 		}
-		if(use_naval && pt.has_same_region_stack) {
-			// When we ALREADY have a land front on the same continent, only allow naval landings onto high-value nearby objectives (e.g. USA -> Yucatan), NEVER suicide 12k Adriatic-to-Baltic raids!
+		if(use_naval && pt.has_same_theater_stack) {
+			// When we ALREADY have a land front in this walkable theater, only allow short-range coastal flanks on wargoal/capital, NEVER suicide cross-continent raids!
 			if(stance != ai_front_helpers::war_stance::active_offense)
 				continue;
 			if(!is_wg && !is_enemy_cap)
 				continue;
 			if(home_port && province::direct_distance_km(state, home_port, target_p) > 1000.0f)
 				continue;
+		}
+		// Quick early reject for suicidal overseas landings when transport fleet cannot even carry enough troops to survive nearby enemy reaction armies!
+		if(use_naval && float(free_tcap) < (direct_def_regs + naval_threat_regs) * 0.75f && (direct_def_regs + naval_threat_regs) >= 4.0f) {
+			continue;
 		}
 
 		// Find candidate unassigned stacks passing dynamic pinning (free 2nd-line reserves first!)
@@ -3807,20 +4147,21 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 			if(rs.assigned)
 				continue;
 			if(use_land) {
-				if(rs.region_id != pt.region_id)
+				if(rs.theater_id != pt.theater_id || pt.theater_id == 0)
 					continue;
 			} else {
-				// Naval invasion requires coastal home region and stack fitting in available transports
-				if(rs.region_id == 0
-					|| size_t(rs.region_id - 1) >= state.province_definitions.connected_region_is_coastal.size()
-					|| !state.province_definitions.connected_region_is_coastal[rs.region_id - 1])
+				// Naval invasion requires a safe coastal port in the stack's walkable theater and stack fitting in available transports
+				if(!tmap.theater_has_safe_port(rs.theater_id))
 					continue;
 				if(rs.regs > free_tcap)
 					continue;
 			}
 
-			auto const& stack_th = get_theater(rs.region_id);
-			if(is_at_war && !pin_tracker.can_pull(state, n, rs.loc, rs.regs, rs.dig_in, rs.is_core, target_p, stack_th.continuous_front))
+			auto const stack_th = get_theater(rs.theater_id);
+			bool allow_screen_adv = use_land
+				&& province::provinces_are_adjacent(state, rs.loc, target_p)
+				&& (is_wg || !has_direct_defenders || stance == ai_front_helpers::war_stance::active_offense);
+			if(is_at_war && !pin_tracker.can_pull(state, n, rs.loc, rs.regs, rs.dig_in, rs.is_core, target_p, stack_th.continuous_front, 0, 0, allow_screen_adv))
 				continue;
 
 			float d_km = province::direct_distance_km(state, rs.loc, target_p);
@@ -3842,14 +4183,16 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		if(cands.empty())
 			continue;
 
+		bool const need_artillery_punch = has_direct_defenders || (use_naval && naval_threat_regs >= 4.0f);
 		std::sort(cands.begin(), cands.end(), [&](cand const& a, cand const& b) {
 			if(a.is_free_reserve != b.is_free_reserve)
 				return a.is_free_reserve > b.is_free_reserve;
-			if(use_naval && has_direct_defenders && a.is_core != b.is_core)
+			if(use_naval && need_artillery_punch && a.is_core != b.is_core)
 				return a.is_core > b.is_core;
-			// Modest ~120 km (~1 province) preference for artillery-core stacks on defended battles, NEVER 400+ km!
-			float a_key = a.dist_km - ((has_direct_defenders && a.is_core) ? 120.0f : 0.0f);
-			float b_key = b.dist_km - ((has_direct_defenders && b.is_core) ? 120.0f : 0.0f);
+			// For defended battles, strongly lead with a 2nd-line artillery-core strike corps (~260 km preference);
+			// for empty border grabs, prefer pure infantry so artillery strike corps stay free for real battles!
+			float a_key = a.dist_km + (need_artillery_punch ? (a.is_core ? -260.0f : 0.0f) : (a.is_core ? 120.0f : 0.0f));
+			float b_key = b.dist_km + (need_artillery_punch ? (b.is_core ? -260.0f : 0.0f) : (b.is_core ? 120.0f : 0.0f));
 			if(a_key != b_key)
 				return a_key < b_key;
 			return ready_stacks[a.idx].id.index() < ready_stacks[b.idx].id.index();
@@ -3918,32 +4261,37 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		chosen_indices.clear();
 		bool odds_sufficient = false;
 		int32_t chosen_regs_sum = 0;
-		uint16_t naval_origin_region = ready_stacks[cands[0].idx].region_id;
+		bool chosen_has_core = false;
+		uint16_t naval_origin_theater = ready_stacks[cands[0].idx].theater_id;
 
 		if(!has_direct_defenders) {
-			// Empty tile (0 direct defenders): walk in with enough force not to get wiped by 1-hop enemies, WITHOUT over-stacking beyond supply!
-			// Never treat an empty tile as "defended by 69k dug-in hill troops"!
+			// Empty tile (0 direct defenders):
+			// - On land: walk in with enough force not to get wiped by 1-hop enemies, WITHOUT over-stacking beyond supply!
+			// - By sea: size strictly against nearby enemy land reaction forces (e.g. 60K in New York -> NEVER drop 12K on Washington!)
 			float const reg_w = std::max(0.1f, state.defines.pop_size_per_regiment / 1000.0f);
 			int32_t stage_sl_regs = staging_prov
 				? std::max(8, int32_t(float(military::supply_limit_in_province(state, n, staging_prov)) / reg_w))
 				: 12;
-			float raw_cover = nearby_enemy_regs * (stance == ai_front_helpers::war_stance::defensive ? 0.65f : 0.45f);
-			float needed_cover = std::min(raw_cover, float(stage_sl_regs));
+			float needed_cover = use_naval
+				? (naval_threat_regs * 0.90f)
+				: std::min(nearby_enemy_regs * (stance == ai_front_helpers::war_stance::defensive ? 0.65f : 0.45f), float(stage_sl_regs));
+			size_t max_empty_stacks = use_naval ? 6 : 3;
+
 			if(needed_cover <= 1.0f) {
 				chosen_attackers.push_back(ready_stacks[cands[0].idx].id);
 				chosen_indices.push_back(cands[0].idx);
 				odds_sufficient = true;
 			} else {
 				for(auto const& c : cands) {
-					if(chosen_attackers.size() >= 3)
+					if(chosen_attackers.size() >= max_empty_stacks)
 						break;
 					auto const& rs = ready_stacks[c.idx];
 					if(use_naval) {
-						if(rs.region_id != naval_origin_region || chosen_regs_sum + rs.regs > free_tcap)
+						if(rs.theater_id != naval_origin_theater || chosen_regs_sum + rs.regs > free_tcap)
 							continue;
 					}
 					if(is_at_war) {
-						auto const& stack_th = get_theater(rs.region_id);
+						auto const stack_th = get_theater(rs.theater_id);
 						if(stack_th.continuous_front) {
 							int32_t extra_regs = 0;
 							int32_t extra_stacks = 0;
@@ -3953,35 +4301,40 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 									extra_stacks += 1;
 								}
 							}
-							if(!pin_tracker.can_pull(state, n, rs.loc, rs.regs, rs.dig_in, rs.is_core, target_p, true, extra_regs, extra_stacks))
+							bool allow_screen_adv = use_land && province::provinces_are_adjacent(state, rs.loc, target_p);
+							if(!pin_tracker.can_pull(state, n, rs.loc, rs.regs, rs.dig_in, rs.is_core, target_p, true, extra_regs, extra_stacks, allow_screen_adv))
 								continue;
 						}
 					}
 					chosen_attackers.push_back(rs.id);
 					chosen_indices.push_back(c.idx);
 					chosen_regs_sum += rs.regs;
-					if(float(chosen_regs_sum) >= needed_cover) {
+					if(rs.is_core) {
+						chosen_has_core = true;
+					}
+					bool naval_quality_ok = !use_naval || naval_threat_regs < 4.0f || chosen_has_core || float(chosen_regs_sum) >= naval_threat_regs * 1.15f;
+					if(float(chosen_regs_sum) >= needed_cover && naval_quality_ok) {
 						odds_sufficient = true;
 						break;
 					}
 				}
 			}
 		} else {
-			// Directly defended province: evaluate analytically against DIRECT defenders, with realistic discount for 1-hop enemy reinforcements
-			float reinf_divisor = 1.0f + 0.35f * (nearby_enemy_regs / std::max(4.0f, direct_def_regs));
+			// Directly defended province: evaluate analytically against DIRECT defenders, with realistic discount for neighboring/reaction enemy reinforcements
+			float reinf_divisor = 1.0f + (use_naval ? 0.55f : 0.35f) * (nearby_enemy_regs / std::max(4.0f, direct_def_regs));
 			for(auto const& c : cands) {
 				if(chosen_attackers.size() >= 8)
 					break;
 				auto const& rs = ready_stacks[c.idx];
 				if(use_naval) {
-					if(rs.region_id != naval_origin_region)
+					if(rs.theater_id != naval_origin_theater)
 						continue;
 					if(chosen_regs_sum + rs.regs > free_tcap)
 						continue;
 				}
 				// Dynamic check against stacks already tentatively picked from the same province
 				if(is_at_war) {
-					auto const& stack_th = get_theater(rs.region_id);
+					auto const stack_th = get_theater(rs.theater_id);
 					if(stack_th.continuous_front) {
 						int32_t extra_regs = 0;
 						int32_t extra_stacks = 0;
@@ -3991,7 +4344,10 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 								extra_stacks += 1;
 							}
 						}
-						if(!pin_tracker.can_pull(state, n, rs.loc, rs.regs, rs.dig_in, rs.is_core, target_p, true, extra_regs, extra_stacks))
+						bool allow_screen_adv = use_land
+							&& province::provinces_are_adjacent(state, rs.loc, target_p)
+							&& (is_wg || stance == ai_front_helpers::war_stance::active_offense);
+						if(!pin_tracker.can_pull(state, n, rs.loc, rs.regs, rs.dig_in, rs.is_core, target_p, true, extra_regs, extra_stacks, allow_screen_adv))
 							continue;
 					}
 				}
@@ -4003,7 +4359,8 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 				auto eval = ai_battle_eval::evaluate_battle_outcome(state, chosen_attackers, direct_defenders, target_p, best_crossing);
 				float eff_win = eval.win_ratio / reinf_divisor;
 				bool decisive_overmatch = (stance != ai_front_helpers::war_stance::defensive) && (eff_win >= 2.0f);
-				if(eff_win >= req_win && (eval.casualty_ratio <= max_cas || decisive_overmatch)) {
+				bool naval_survives_reaction = !use_naval || naval_threat_regs < 4.0f || float(chosen_regs_sum) >= (direct_def_regs + naval_threat_regs) * 0.85f;
+				if(eff_win >= req_win && (eval.casualty_ratio <= max_cas || decisive_overmatch) && naval_survives_reaction) {
 					odds_sufficient = true;
 					break;
 				}
@@ -4238,6 +4595,12 @@ void move_gathered_attackers_impl(sys::state& state, bool only_at_war) {
 					}
 				}
 			}
+		} else if(ar.get_ai_activity() == uint8_t(army_activity::attacking)
+			&& ar.get_ai_province() == ar.get_location_from_army_location()
+			&& !ar.get_arrival_time()
+			&& !ar.get_battle_from_army_battle_participation()
+			&& !ar.get_navy_from_army_transport()) {
+			ar.set_ai_activity(uint8_t(army_activity::attack_gathered));
 		} else if(ar.get_ai_activity() == uint8_t(army_activity::attacking)
 			&& ar.get_ai_province() != ar.get_location_from_army_location()
 			&& !ar.get_arrival_time()
@@ -5296,7 +5659,9 @@ void new_units_and_merging(sys::state& state) {
 							|| other.get_is_retreating())
 							continue;
 						auto oloc = other.get_location_from_army_location();
-						if(!oloc || oloc.id == location.id || oloc.get_connected_region_id() != location.get_connected_region_id())
+						if(!oloc || oloc.id == location.id)
+							continue;
+						if(!controller.get_is_at_war() && oloc.get_connected_region_id() != location.get_connected_region_id())
 							continue;
 						auto osc = ai_detail::classify_army_composition(state, controller, other.id);
 						if(osc.total < reg_count || (osc.total == reg_count && other.id.index() > ar.id.index()))
@@ -5332,12 +5697,14 @@ void new_units_and_merging(sys::state& state) {
 				}
 			}
 
-			// Split oversized stacks that by themselves exceed local/typical supply limit and are suffering attrition
+			// Split oversized stacks: either actively taking attrition above local supply limit, OR giant blobs parked in a high-SL hub
+			// (e.g. 60K in New York) that are too big to fit onto any realistic front province without burning attrition!
 			bool alone_over_local_sl = (reg_count > local_sl_regs);
 			bool over_typical_cap = (reg_count >= std::max(10, supply_cap_regs + 2));
+			bool giant_hub_blob = (reg_count >= std::max(14, supply_cap_regs + 4));
 			if(reg_count >= 8
-				&& (alone_over_local_sl || over_typical_cap)
-				&& military::relative_attrition_amount(state, ar.id, location.id) >= 0.01f) {
+				&& (((alone_over_local_sl || over_typical_cap) && military::relative_attrition_amount(state, ar.id, location.id) >= 0.01f)
+					|| giant_hub_blob)) {
 				std::vector<dcon::regiment_id> front_regs;
 				std::vector<dcon::regiment_id> back_regs;
 				for(auto r : regs) {
@@ -5950,15 +6317,28 @@ void manage_active_battles(sys::state& state) {
 		return nation_pin_trackers.back().second;
 	};
 
+	std::vector<std::pair<dcon::nation_id, ai_front_helpers::walkable_theater_map>> nation_theater_maps;
+	auto get_theater_map = [&](dcon::nation_id n) -> ai_front_helpers::walkable_theater_map const& {
+		for(auto const& kv : nation_theater_maps) {
+			if(kv.first == n)
+				return kv.second;
+		}
+		nation_theater_maps.push_back({ n, ai_front_helpers::walkable_theater_map{} });
+		nation_theater_maps.back().second.build(state, n);
+		return nation_theater_maps.back().second;
+	};
+
 	struct theater_mode_key {
 		dcon::nation_id n;
-		uint16_t region_id;
+		uint16_t theater_id;
 		bool continuous_front;
 	};
 	std::vector<theater_mode_key> theater_modes;
-	auto is_continuous_front = [&](dcon::nation_id n, uint16_t rid) -> bool {
+	auto is_continuous_front = [&](dcon::nation_id n, ai_front_helpers::walkable_theater_map const& tmap, uint16_t tid) -> bool {
+		if(tid == 0)
+			return false;
 		for(auto const& tm : theater_modes) {
-			if(tm.n == n && tm.region_id == rid)
+			if(tm.n == n && tm.theater_id == tid)
 				return tm.continuous_front;
 		}
 		bool cf = false;
@@ -5966,10 +6346,10 @@ void manage_active_battles(sys::state& state) {
 			std::vector<dcon::nation_id> war_allies;
 			std::vector<dcon::nation_id> war_enemies;
 			ai_front_helpers::collect_war_sides(state, n, war_allies, war_enemies);
-			auto ts = ai_front_helpers::evaluate_theater_summary(state, n, rid, war_allies, war_enemies, false);
+			auto ts = ai_front_helpers::evaluate_theater_summary(state, n, tmap, tid, war_allies, war_enemies, false);
 			cf = ts.continuous_front;
 		}
-		theater_modes.push_back(theater_mode_key{ n, rid, cf });
+		theater_modes.push_back(theater_mode_key{ n, tid, cf });
 		return cf;
 	};
 
@@ -6151,11 +6531,14 @@ void manage_active_battles(sys::state& state) {
 				float priority;
 			};
 			std::vector<reinf_cand> reserves_pool;
-			uint16_t loc_region = state.world.province_get_connected_region_id(loc);
 
 			float const battle_km_per_day = std::max(5.0f, 4.0f * state.defines.alice_army_marching_hours_per_day);
 			for(auto n : ai_nations) {
-				bool cont_front = is_continuous_front(n, loc_region);
+				auto const& tmap = get_theater_map(n);
+				uint16_t loc_theater = tmap.theater_of(loc);
+				if(loc_theater == 0)
+					continue;
+				bool cont_front = is_continuous_front(n, tmap, loc_theater);
 				auto const& tracker = get_pin_tracker(n);
 				float max_gather_km = cont_front ? 450.0f : 650.0f;
 				float max_days = cont_front ? 22.0f : 26.0f;
@@ -6171,7 +6554,7 @@ void manage_active_battles(sys::state& state) {
 						|| !army_ready_for_battle(state, n, army))
 						continue;
 					auto aloc = army.get_location_from_army_location().id;
-					if(!aloc || aloc == loc || state.world.province_get_connected_region_id(aloc) != loc_region)
+					if(!aloc || aloc == loc || tmap.theater_of(aloc) != loc_theater)
 						continue;
 					// Skip armies already marching directly to this battle
 					auto apath = army.get_path();
@@ -6430,10 +6813,12 @@ void ai_split_surplus_regiments(sys::state& state, dcon::nation_id n) {
 	}
 
 	float const reg_weight = std::max(0.1f, state.defines.pop_size_per_regiment / 1000.0f);
+	ai_front_helpers::walkable_theater_map tmap;
+	tmap.build(state, n);
 
 	struct prov_state {
 		dcon::province_id p;
-		uint16_t region_id = 0;
+		uint16_t theater_id = 0;
 		int32_t present_regs = 0;
 		int32_t incoming_regs = 0;
 		int32_t present_front = 0;
@@ -6465,7 +6850,7 @@ void ai_split_surplus_regiments(sys::state& state, dcon::nation_id n) {
 		}
 		provs.push_back(prov_state{
 			p,
-			state.world.province_get_connected_region_id(p),
+			tmap.theater_of(p),
 			other_regs,
 			0,
 			0,
@@ -6485,7 +6870,7 @@ void ai_split_surplus_regiments(sys::state& state, dcon::nation_id n) {
 	struct donor_stack {
 		dcon::army_id id;
 		dcon::province_id loc;
-		uint16_t region_id = 0;
+		uint16_t theater_id = 0;
 		size_t loc_prov_idx = 0;
 		int32_t total = 0;
 		int32_t frontline = 0;
@@ -6561,7 +6946,7 @@ void ai_split_surplus_regiments(sys::state& state, dcon::nation_id n) {
 				donors.push_back(donor_stack{
 					ar.id,
 					loc,
-					provs[pidx].region_id,
+					provs[pidx].theater_id,
 					pidx,
 					sc.total,
 					sc.frontline,
@@ -6651,7 +7036,7 @@ void ai_split_surplus_regiments(sys::state& state, dcon::nation_id n) {
 		// Order donors deterministically: 2nd-line safe donors first, then closest to target_p
 		std::vector<size_t> donor_order;
 		for(size_t d = 0; d < donors.size(); ++d) {
-			if(donors[d].region_id != tprov.region_id || donors[d].loc == tprov.p || donors[d].pure_inf.empty())
+			if(donors[d].theater_id == 0 || donors[d].theater_id != tprov.theater_id || donors[d].loc == tprov.p || donors[d].pure_inf.empty())
 				continue;
 			if(province::direct_distance_km(state, donors[d].loc, tprov.p) > 450.0f)
 				continue;
