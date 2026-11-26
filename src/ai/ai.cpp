@@ -1012,15 +1012,29 @@ inline int32_t prov_cw(sys::state const& state, dcon::nation_id n, dcon::provinc
 inline bool army_has_backline_core(sys::state const& state, dcon::nation_id n, dcon::army_id a) {
 	for(auto r : state.world.army_get_army_membership(a)) {
 		auto uid = r.get_regiment().get_type();
-		auto& bdef = state.military_definitions.unit_base_definitions[uid];
-		if(bdef.type == military::unit_type::support)
+		if(!uid)
+			continue;
+		auto const& bdef = state.military_definitions.unit_base_definitions[uid];
+		auto stats = n ? state.world.nation_get_unit_stats(n, uid) : sys::unit_variable_stats{};
+		float sup = (n && stats.discipline_or_evasion > 0.0f) ? stats.support : bdef.support;
+		if(sup > 0.0f)
 			return true;
-		if(bdef.type == military::unit_type::special) {
-			auto stats = n ? state.world.nation_get_unit_stats(n, uid) : military::unit_definition{};
-			float sup = (n && stats.discipline_or_evasion > 0.0f) ? stats.support : bdef.support;
-			if(sup > 0.0f)
-				return true;
-		}
+	}
+	return false;
+}
+
+inline bool army_has_offensive_utility(sys::state const& state, dcon::nation_id n, dcon::army_id a) {
+	for(auto r : state.world.army_get_army_membership(a)) {
+		auto uid = r.get_regiment().get_type();
+		if(!uid)
+			continue;
+		auto const& bdef = state.military_definitions.unit_base_definitions[uid];
+		auto stats = n ? state.world.nation_get_unit_stats(n, uid) : sys::unit_variable_stats{};
+		bool use_stats = (n && stats.discipline_or_evasion > 0.0f);
+		float rec = use_stats ? stats.reconnaissance_or_fire_range : bdef.reconnaissance_or_fire_range;
+		float sg = use_stats ? stats.siege_or_torpedo_attack : bdef.siege_or_torpedo_attack;
+		if(rec > 0.0f || sg > 0.0f)
+			return true;
 	}
 	return false;
 }
@@ -1644,6 +1658,7 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 		int32_t regs = 0;
 		int32_t dig_in = 0;
 		bool is_core = false;
+		bool is_offensive_core = false;
 		bool assigned = false;
 	};
 	std::vector<guard_unit> guards;
@@ -1666,6 +1681,8 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 			&& !ar.get_battle_from_army_battle_participation()
 			&& !ar.get_navy_from_army_transport()
 			&& !ar.get_is_retreating()) {
+			bool core = ai_front_helpers::army_has_backline_core(state, n, ar.id);
+			bool off_core = core && ai_front_helpers::army_has_offensive_utility(state, n, ar.id);
 			guards.push_back(guard_unit{
 				ar.id,
 				loc,
@@ -1673,7 +1690,8 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 				tid,
 				rcount,
 				int32_t(ar.get_dig_in()),
-				ai_front_helpers::army_has_backline_core(state, n, ar.id),
+				core,
+				off_core,
 				false
 			});
 		}
@@ -2247,6 +2265,11 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 		}
 	}
 	std::sort(lock_order.begin(), lock_order.end(), [&](size_t a, size_t b) {
+		// Pure defensive holding cores lock onto Line 1 before offensive-utility cores (recon/siege do nothing in defense!)
+		bool a_def_core = guards[a].is_core && !guards[a].is_offensive_core;
+		bool b_def_core = guards[b].is_core && !guards[b].is_offensive_core;
+		if(a_def_core != b_def_core)
+			return a_def_core > b_def_core;
 		float pa = slots[size_t(prov_to_slot[guards[a].cur_loc.index()])].priority;
 		float pb = slots[size_t(prov_to_slot[guards[b].cur_loc.index()])].priority;
 		if(pa != pb)
@@ -2259,7 +2282,7 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 		auto& sl = slots[size_t(sidx)];
 		auto& th = ensure_theater(sl.theater_id);
 		if(g.is_core && th.desired_l2_cores > 0 && th.l1_cores_assigned >= th.max_l1_cores) {
-			continue; // Leave lowest-priority core stack free to stage as a 2nd-line Strike Corps!
+			continue; // Leave offensive-utility / lowest-priority core stacks free to stage as 2nd-line Strike Corps!
 		}
 		if(sl.assigned_regs + g.regs <= sl.max_regs) {
 			g.assigned = true;
@@ -2272,10 +2295,12 @@ void distribute_guards_wartime(sys::state& state, dcon::nation_id n) {
 		}
 	}
 
-	// Step 6: Assign remaining guards — Artillery-core stacks split cleanly between hottest Line 1 tiles AND Line 2 Offensive Strike Corps,
-	// then pure-infantry stacks seal every remaining empty Line 1 tile + back up Line 2/3!
+	// Step 6: Assign remaining guards — Pure defensive holding cores claim Line 1 first;
+	// offensive-utility strike cores (carrying recon/siege, useless on defense) naturally fill Line 2 Strike Corps behind wargoals;
+	// pure frontline stacks seal any remaining empty Line 1 tile + back up Line 2/3!
 	std::sort(guards.begin(), guards.end(), [](guard_unit const& a, guard_unit const& b) {
 		if(a.is_core != b.is_core) return a.is_core > b.is_core;
+		if(a.is_core && a.is_offensive_core != b.is_offensive_core) return a.is_offensive_core < b.is_offensive_core;
 		if(a.regs != b.regs) return a.regs > b.regs;
 		return a.id.index() < b.id.index();
 	});
@@ -3669,6 +3694,7 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		int32_t regs = 0;
 		int32_t dig_in = 0;
 		bool is_core = false;
+		bool is_offensive_core = false;
 		bool assigned = false;
 	};
 	std::vector<ready_stack> ready_stacks;
@@ -3708,13 +3734,16 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		int32_t rcount = int32_t(regs.end() - regs.begin());
 		if(rcount == 0)
 			continue;
+		bool core = ai_front_helpers::army_has_backline_core(state, n, army.id);
+		bool off_core = core && ai_front_helpers::army_has_offensive_utility(state, n, army.id);
 		ready_stacks.push_back(ready_stack{
 			army.id,
 			loc,
 			tmap.theater_of(loc),
 			rcount,
 			int32_t(army.get_dig_in()),
-			ai_front_helpers::army_has_backline_core(state, n, army.id),
+			core,
+			off_core,
 			false
 		});
 	}
@@ -4134,11 +4163,12 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 			continue;
 		}
 
-		// Find candidate unassigned stacks passing dynamic pinning (free 2nd-line reserves first!)
+		// Find candidate unassigned stacks passing dynamic pinning (free 2nd-line strike reserves first!)
 		struct cand {
 			size_t idx;
 			float dist_km;
 			bool is_core;
+			bool is_offensive_core;
 			bool is_free_reserve;
 		};
 		std::vector<cand> cands;
@@ -4180,7 +4210,7 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 				continue;
 			}
 
-			cands.push_back(cand{ s, d_km, rs.is_core, other_enemy <= 0.1f });
+			cands.push_back(cand{ s, d_km, rs.is_core, rs.is_offensive_core, other_enemy <= 0.1f });
 		}
 		if(cands.empty())
 			continue;
@@ -4191,10 +4221,16 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 				return a.is_free_reserve > b.is_free_reserve;
 			if(use_naval && need_artillery_punch && a.is_core != b.is_core)
 				return a.is_core > b.is_core;
-			// For defended battles, strongly lead with a 2nd-line artillery-core strike corps (~260 km preference);
-			// for empty border grabs, prefer pure infantry so artillery strike corps stay free for real battles!
-			float a_key = a.dist_km + (need_artillery_punch ? (a.is_core ? -260.0f : 0.0f) : (a.is_core ? 120.0f : 0.0f));
-			float b_key = b.dist_km + (need_artillery_punch ? (b.is_core ? -260.0f : 0.0f) : (b.is_core ? 120.0f : 0.0f));
+			// For defended battles, strongly lead with Offensive Strike Corps (backline + recon/siege, -400 km),
+			// then regular backline cores (-260 km); for empty grabs prefer frontline stacks so strike corps stay free!
+			auto core_bias = [&](cand const& c) -> float {
+				if(need_artillery_punch) {
+					return c.is_offensive_core ? -400.0f : (c.is_core ? -260.0f : 0.0f);
+				}
+				return c.is_offensive_core ? 180.0f : (c.is_core ? 120.0f : 0.0f);
+			};
+			float a_key = a.dist_km + core_bias(a);
+			float b_key = b.dist_km + core_bias(b);
 			if(a_key != b_key)
 				return a_key < b_key;
 			return ready_stacks[a.idx].id.index() < ready_stacks[b.idx].id.index();
@@ -4896,82 +4932,181 @@ inline bool unit_type_has_build_shortage(sys::state& state, dcon::nation_id n, d
 	return false;
 }
 
+inline sys::unit_variable_stats get_effective_unit_stats(sys::state const& state, dcon::nation_id n, dcon::unit_type_id uid) {
+	if(!uid)
+		return sys::unit_variable_stats{};
+	auto const& bdef = state.military_definitions.unit_base_definitions[uid];
+	if(n) {
+		auto stats = state.world.nation_get_unit_stats(n, uid);
+		if(stats.discipline_or_evasion > 0.0f)
+			return stats;
+	}
+	return static_cast<sys::unit_variable_stats const&>(bdef);
+}
+
 inline bool is_backline_unit(sys::state const& state, dcon::nation_id n, dcon::unit_type_id uid) {
 	if(!uid)
 		return false;
-	auto& bdef = state.military_definitions.unit_base_definitions[uid];
-	if(bdef.type == military::unit_type::support)
-		return true;
-	if(bdef.type == military::unit_type::special) {
-		auto stats = n ? state.world.nation_get_unit_stats(n, uid) : military::unit_definition{};
-		float sup = (n && stats.discipline_or_evasion > 0.0f) ? stats.support : bdef.support;
-		return sup > 0.0f;
-	}
-	return false;
+	// Pure battle-engine rule (military.cpp:7656): ANY land unit with support > 0 deals damage from back_line!
+	// Zero hardcoding of unit_type::support/special so it works seamlessly in Medieval/Modern/Fantasy mods too.
+	return get_effective_unit_stats(state, n, uid).support > 0.0f;
 }
 
-inline dcon::unit_type_id get_best_recon_unit(sys::state& state, dcon::nation_id n, bool primary_culture) {
-	dcon::unit_type_id best;
-	auto get_recon = [&](dcon::unit_type_id uid) -> float {
-		if(!uid) return 0.0f;
-		auto stats = state.world.nation_get_unit_stats(n, uid);
-		auto& bdef = state.military_definitions.unit_base_definitions[uid];
-		return (stats.discipline_or_evasion > 0.0f) ? stats.reconnaissance_or_fire_range : bdef.reconnaissance_or_fire_range;
+inline float estimate_unit_economic_cost(sys::state const& state, dcon::unit_type_id uid) {
+	if(!uid)
+		return 1e9f;
+	auto const& bdef = state.military_definitions.unit_base_definitions[uid];
+	auto set_cost = [&](economy::commodity_set const& cs) -> float {
+		float total = 0.0f;
+		for(uint32_t i = 0; i < economy::commodity_set::set_size; ++i) {
+			auto cid = cs.commodity_type[i];
+			if(!cid)
+				break;
+			float price = state.world.commodity_get_median_price(cid);
+			if(price <= 0.01f) {
+				price = state.world.commodity_get_cost(cid);
+			}
+			total += cs.commodity_amounts[i] * std::max(0.1f, price);
+		}
+		return total;
 	};
-	auto get_combat = [&](dcon::unit_type_id uid) -> float {
-		if(!uid) return 0.0f;
-		auto stats = state.world.nation_get_unit_stats(n, uid);
-		auto& bdef = state.military_definitions.unit_base_definitions[uid];
-		auto& d = (stats.discipline_or_evasion > 0.0f) ? stats : bdef;
-		return d.defence_or_hull + d.attack_or_gun_power + d.support * 2.0f;
-	};
+	// 1x build cost + 180 days of daily supply upkeep (naturally avoids overpriced luxury elites like Guards for mass frontline!)
+	return std::max(1.0f, set_cost(bdef.build_cost) + set_cost(bdef.supply_cost) * 180.0f);
+}
 
+inline float evaluate_frontline_power(sys::unit_variable_stats const& d) {
+	// Directly mirrors military.cpp:7267,7302: frontline holds the line (defense & org durability weighted above raw attack)
+	float off_dmg = std::max(0.0f, d.attack_or_gun_power) * 0.1f + 1.0f;
+	float def_dmg = std::max(0.0f, d.defence_or_hull) * 0.1f + 1.0f;
+	float durability = std::sqrt(std::max(0.1f, d.discipline_or_evasion) * std::max(5.0f, float(d.default_organisation)) / 30.0f);
+	return (0.40f * off_dmg + 0.60f * def_dmg) * durability;
+}
+
+inline float evaluate_backline_power(sys::unit_variable_stats const& d) {
+	if(d.support <= 0.0f)
+		return 0.0f;
+	// Directly mirrors military.cpp:7660: backline takes 0 damage while covered, pure (dmg * 0.1 + 1) * support
+	float off_dmg = std::max(0.0f, d.attack_or_gun_power) * 0.1f + 1.0f;
+	float def_dmg = std::max(0.0f, d.defence_or_hull) * 0.1f + 1.0f;
+	return (0.50f * off_dmg + 0.50f * def_dmg) * d.support;
+}
+
+inline dcon::unit_type_id get_best_frontline_unit(sys::state& state, dcon::nation_id n, bool primary_culture) {
+	// Stat + cost-efficiency driven across ALL unlocked land units (zero unit_type:: enum hardcoding — works in ANY mod!)
+	auto pick_pass = [&](bool require_zero_support, bool check_shortage) -> dcon::unit_type_id {
+		dcon::unit_type_id best;
+		float best_score = -1.0f;
+		for(uint32_t i = 2; i < state.military_definitions.unit_base_definitions.size(); ++i) {
+			dcon::unit_type_id uid{ dcon::unit_type_id::value_base_t(i) };
+			auto const& bdef = state.military_definitions.unit_base_definitions[uid];
+			if(!bdef.is_land)
+				continue;
+			if(!state.world.nation_get_active_unit(n, uid) && !bdef.active)
+				continue;
+			if(bdef.primary_culture && !primary_culture)
+				continue;
+			auto d = get_effective_unit_stats(state, n, uid);
+			if(require_zero_support && d.support > 0.0f)
+				continue;
+			if(check_shortage && unit_type_has_build_shortage(state, n, uid))
+				continue;
+			float power = evaluate_frontline_power(d);
+			float cost = estimate_unit_economic_cost(state, uid);
+			float score = power / std::pow(cost, 0.12f);
+			if(!best || score > best_score) {
+				best = uid;
+				best_score = score;
+			}
+		}
+		return best;
+	};
+	if(auto u = pick_pass(true, true)) return u;
+	if(auto u = pick_pass(true, false)) return u;
+	if(auto u = pick_pass(false, true)) return u;
+	return pick_pass(false, false);
+}
+
+inline dcon::unit_type_id get_best_backline_unit(sys::state& state, dcon::nation_id n, bool primary_culture) {
+	// Stat + cost-efficiency driven across ALL unlocked land units with support > 0 (Artillery, Medieval Archers, Rocket Art, etc.)
+	dcon::unit_type_id best;
+	float best_score = -1.0f;
 	for(uint32_t i = 2; i < state.military_definitions.unit_base_definitions.size(); ++i) {
 		dcon::unit_type_id uid{ dcon::unit_type_id::value_base_t(i) };
-		auto& bdef = state.military_definitions.unit_base_definitions[uid];
-		if(bdef.type != military::unit_type::cavalry && bdef.type != military::unit_type::special)
+		auto const& bdef = state.military_definitions.unit_base_definitions[uid];
+		if(!bdef.is_land)
 			continue;
 		if(!state.world.nation_get_active_unit(n, uid) && !bdef.active)
 			continue;
 		if(bdef.primary_culture && !primary_culture)
 			continue;
-		float rec = get_recon(uid);
-		if(rec <= 0.0f)
+		auto d = get_effective_unit_stats(state, n, uid);
+		if(d.support <= 0.0f)
 			continue;
 		if(unit_type_has_build_shortage(state, n, uid))
 			continue;
-		float best_rec = get_recon(best);
-		if(!best || rec > best_rec || (rec == best_rec && get_combat(uid) > get_combat(best))) {
+		float power = evaluate_backline_power(d);
+		float cost = estimate_unit_economic_cost(state, uid);
+		float score = power / std::pow(cost, 0.08f);
+		if(!best || score > best_score) {
 			best = uid;
+			best_score = score;
+		}
+	}
+	return best;
+}
+
+inline dcon::unit_type_id get_best_recon_unit(sys::state& state, dcon::nation_id n, bool primary_culture) {
+	// Stat + cost-efficiency driven across ALL unlocked land units with recon > 0 (zero unit_type:: enum hardcoding!)
+	dcon::unit_type_id best;
+	float best_score = -1.0f;
+	for(uint32_t i = 2; i < state.military_definitions.unit_base_definitions.size(); ++i) {
+		dcon::unit_type_id uid{ dcon::unit_type_id::value_base_t(i) };
+		auto const& bdef = state.military_definitions.unit_base_definitions[uid];
+		if(!bdef.is_land)
+			continue;
+		if(!state.world.nation_get_active_unit(n, uid) && !bdef.active)
+			continue;
+		if(bdef.primary_culture && !primary_culture)
+			continue;
+		auto d = get_effective_unit_stats(state, n, uid);
+		if(d.reconnaissance_or_fire_range <= 0.0f)
+			continue;
+		if(unit_type_has_build_shortage(state, n, uid))
+			continue;
+		float combat = (d.support > 0.0f) ? evaluate_backline_power(d) : evaluate_frontline_power(d);
+		float cost = estimate_unit_economic_cost(state, uid);
+		float score = (d.reconnaissance_or_fire_range * 10.0f + combat * 2.0f + d.maneuver * 0.4f) / std::pow(cost, 0.08f);
+		if(!best || score > best_score) {
+			best = uid;
+			best_score = score;
 		}
 	}
 	return best;
 }
 
 inline dcon::unit_type_id get_best_siege_unit(sys::state& state, dcon::nation_id n, bool primary_culture) {
+	// Stat + cost-efficiency driven across ALL unlocked land units with siege > 0 (zero unit_type:: enum hardcoding!)
 	dcon::unit_type_id best;
-	float best_siege = 0.0f;
 	float best_score = -1.0f;
-
 	for(uint32_t i = 2; i < state.military_definitions.unit_base_definitions.size(); ++i) {
 		dcon::unit_type_id uid{ dcon::unit_type_id::value_base_t(i) };
-		auto& bdef = state.military_definitions.unit_base_definitions[uid];
-		if(bdef.type != military::unit_type::special)
+		auto const& bdef = state.military_definitions.unit_base_definitions[uid];
+		if(!bdef.is_land)
 			continue;
 		if(!state.world.nation_get_active_unit(n, uid) && !bdef.active)
 			continue;
 		if(bdef.primary_culture && !primary_culture)
 			continue;
-		auto stats = state.world.nation_get_unit_stats(n, uid);
-		auto& d = (stats.discipline_or_evasion > 0.0f) ? stats : bdef;
+		auto d = get_effective_unit_stats(state, n, uid);
 		if(d.siege_or_torpedo_attack <= 0.0f)
 			continue;
 		if(unit_type_has_build_shortage(state, n, uid))
 			continue;
-		float score = d.siege_or_torpedo_attack * 10.0f + (d.support > 0.0f ? 4.0f : 0.0f) + d.defence_or_hull + d.attack_or_gun_power;
-		if(!best || d.siege_or_torpedo_attack > best_siege || (d.siege_or_torpedo_attack == best_siege && score > best_score)) {
+		float combat = (d.support > 0.0f) ? evaluate_backline_power(d) : evaluate_frontline_power(d);
+		float cost = estimate_unit_economic_cost(state, uid);
+		float score = (d.siege_or_torpedo_attack * 10.0f + combat * 2.0f) / std::pow(cost, 0.08f);
+		if(!best || score > best_score) {
 			best = uid;
-			best_siege = d.siege_or_torpedo_attack;
 			best_score = score;
 		}
 	}
@@ -5232,33 +5367,21 @@ void update_land_constructions(sys::state& state) {
 		int32_t unfull_regular = 0;
 		int32_t total_building = 0;
 
-		// Nation-wide best unit types (non-primary and primary culture), filtered by nation-wide market availability
-		auto inf_type = military::get_best_infantry(state, n, false, false);
-		auto pc_inf_type = military::get_best_infantry(state, n, true, false);
-		auto art_type = military::get_best_artillery(state, n, false, false);
-		auto pc_art_type = military::get_best_artillery(state, n, true, false);
+		// Pure stat + cost-efficiency role discovery across ALL unlocked land units (100% mod-agnostic — zero unit_type:: hardcoding!)
+		auto inf_type = ai_detail::get_best_frontline_unit(state, n, false);
+		auto pc_inf_type = ai_detail::get_best_frontline_unit(state, n, true);
+		auto art_type = ai_detail::get_best_backline_unit(state, n, false);
+		auto pc_art_type = ai_detail::get_best_backline_unit(state, n, true);
 		auto recon_type = ai_detail::get_best_recon_unit(state, n, false);
 		auto pc_recon_type = ai_detail::get_best_recon_unit(state, n, true);
 		auto siege_type = ai_detail::get_best_siege_unit(state, n, false);
 		auto pc_siege_type = ai_detail::get_best_siege_unit(state, n, true);
 
-		if(pc_inf_type && ai_detail::unit_type_has_build_shortage(state, n, pc_inf_type)) {
-			pc_inf_type = inf_type;
-		}
-		if(art_type && ai_detail::unit_type_has_build_shortage(state, n, art_type)) {
-			art_type = dcon::unit_type_id{};
-		}
-		if(pc_art_type && ai_detail::unit_type_has_build_shortage(state, n, pc_art_type)) {
-			pc_art_type = art_type;
-		}
-
 		auto adjust_unit_counts = [&](dcon::unit_type_id uid, int32_t delta) {
 			if(!uid)
 				return;
-			auto& bdef = state.military_definitions.unit_base_definitions[uid];
-			auto stats = state.world.nation_get_unit_stats(n, uid);
-			auto& d = (stats.discipline_or_evasion > 0.0f) ? stats : bdef;
-			if(ai_detail::is_backline_unit(state, n, uid)) {
+			auto d = ai_detail::get_effective_unit_stats(state, n, uid);
+			if(d.support > 0.0f) {
 				num_backline += delta;
 			} else {
 				num_frontline += delta;
@@ -5300,24 +5423,32 @@ void update_land_constructions(sys::state& state) {
 		// Size targets against actual standing regular army (or desired_army if expanding), excluding temporary mobilized brigades.
 		int32_t desired_army = int32_t(calculate_desired_army_size(state, n));
 		int32_t composition_army_basis = std::max(desired_army, total_regular_existing);
-		int32_t art_cap = ai_detail::calculate_nation_artillery_cap(state, n, composition_army_basis);
+		bool has_backline_units = bool(art_type || pc_art_type);
+		int32_t art_cap = has_backline_units ? ai_detail::calculate_nation_artillery_cap(state, n, composition_army_basis) : 0;
 		int32_t nation_cw = ai_detail::estimate_nation_base_combat_width(state, n);
 		int32_t supply_cap_regs = ai_detail::typical_supply_regiment_cap(state, n);
-		int32_t core_backline_target = std::clamp(std::min(nation_cw <= 14 ? nation_cw : 5, std::max(6, supply_cap_regs) / 2), 3, 10);
-		int32_t estimated_core_stacks = std::max(1, (art_cap + core_backline_target - 1) / core_backline_target);
+		int32_t core_backline_target = has_backline_units ? std::clamp(std::min(nation_cw <= 14 ? nation_cw : 5, std::max(6, supply_cap_regs) / 2), 3, 10) : 0;
+		int32_t estimated_core_stacks = (has_backline_units && core_backline_target > 0)
+			? std::max(1, (art_cap + core_backline_target - 1) / core_backline_target)
+			: std::max(1, composition_army_basis / 10);
 
-		// Target recon & siege proportional to core fighting stacks (matching recon_unit_ratio / engineer_unit_ratio)
-		int32_t recon_basis = std::min(composition_army_basis, std::max(art_cap * 2 + 4, 10));
+		// In Project Alice (military.cpp:7216,7256,7342), recon & siege ONLY work when ATTACKING (0 benefit on defense!).
+		// Therefore size recon & siege strictly for dedicated OFFENSIVE strike corps (~1/3 in narrow-CW WWI, ~1/2 in maneuver era),
+		// leaving defensive Line 1 holding cores as pure cost-effective Frontline + Backline!
+		int32_t target_offensive_cores = (nation_cw <= 14)
+			? std::max(1, (estimated_core_stacks + 1) / 3)
+			: std::max(1, (estimated_core_stacks + 1) / 2);
+		int32_t strike_regs_per_stack = std::clamp(core_backline_target > 0 ? (core_backline_target * 2 + 2) : 10, 8, std::max(8, supply_cap_regs));
+		int32_t offensive_reg_basis = std::min(composition_army_basis, target_offensive_cores * strike_regs_per_stack);
 		int32_t target_recon = (recon_type || pc_recon_type)
-			? std::clamp(int32_t(std::round(float(recon_basis) * state.defines.recon_unit_ratio)), composition_army_basis >= 6 ? 1 : 0, std::max(1, estimated_core_stacks * 2))
+			? std::clamp(int32_t(std::round(float(offensive_reg_basis) * state.defines.recon_unit_ratio)), composition_army_basis >= 6 ? 1 : 0, std::max(1, target_offensive_cores * 2))
 			: 0;
 		int32_t target_siege = ((siege_type || pc_siege_type) && composition_army_basis >= 8)
-			? std::clamp(estimated_core_stacks, 1, std::max(1, int32_t(float(composition_army_basis) * state.defines.engineer_unit_ratio)))
+			? std::clamp(int32_t(std::round(float(offensive_reg_basis) * state.defines.engineer_unit_ratio)), 1, std::max(1, target_offensive_cores * 2))
 			: 0;
 
-		// Pass 2: Safe, paced, stack-aware cross-type regiment conversion & same-type upgrades via military::upgrade_regiment!
-		// Lets nations convert starting/excess Infantry, Irregulars & non-recon Cavalry into Artillery, Hussars, Engineers
-		// even when already at or above desired_army — without weakening active frontline stacks or cratering army strength.
+		// Pass 2: Safe, paced, stat-driven cross-type regiment conversion via military::upgrade_regiment!
+		// Zero hardcoding of unit names or unit_type:: buckets — works in Vanilla, Medieval, Modern, or any custom mod.
 		bool at_war = n.get_is_at_war();
 		auto econ_mode = evaluate_war_economy_mode(state, n.id);
 		if(total_regular_existing > 0 && econ_mode != war_economy_mode::prewar_ready) {
@@ -5335,8 +5466,14 @@ void update_land_constructions(sys::state& state) {
 					int32_t priority_group = 3;
 				};
 				std::vector<conv_army> conv_armies;
+				int32_t existing_offensive_cores = 0;
+
 				for(auto a : state.world.nation_get_army_control(n)) {
 					auto ar = a.get_army();
+					auto sc_all = ai_detail::classify_army_composition(state, n.id, ar.id);
+					if((sc_all.backline > 0 || !has_backline_units) && (sc_all.recon > 0 || sc_all.siege > 0)) {
+						++existing_offensive_cores;
+					}
 					if(!unit_on_ai_control(state, ar)
 						|| ar.get_battle_from_army_battle_participation()
 						|| ar.get_navy_from_army_transport()
@@ -5354,19 +5491,18 @@ void update_land_constructions(sys::state& state) {
 					if(ai_front_helpers::is_province_near_hostiles(state, n.id, loc, at_war ? 2 : 1)) {
 						continue;
 					}
-					auto sc = ai_detail::classify_army_composition(state, n.id, ar.id);
-					if(sc.total <= 0) {
+					if(sc_all.total <= 0) {
 						continue;
 					}
 					int32_t pgroup = 3;
-					if(sc.backline > 0 && sc.backline < core_backline_target) {
-						pgroup = 0; // First top up existing partial artillery cores
-					} else if(sc.backline == 0 && sc.total >= 6) {
-						pgroup = 1; // Next turn substantial pure-infantry stacks into balanced artillery corps in-place
-					} else if(sc.backline > 0) {
-						pgroup = 2; // Already at core_backline_target (still eligible for recon/irregular/tech upgrades)
+					if(has_backline_units && sc_all.backline > 0 && sc_all.backline < core_backline_target) {
+						pgroup = 0; // First top up existing partial backline cores
+					} else if(sc_all.backline == 0 && sc_all.total >= 6) {
+						pgroup = 1; // Next turn substantial frontline stacks into balanced cores in-place
+					} else if(sc_all.backline > 0) {
+						pgroup = 2; // Already at core_backline_target (still eligible for obsolete/offensive-role cleanup)
 					}
-					conv_armies.push_back(conv_army{ ar.id, sc, pgroup });
+					conv_armies.push_back(conv_army{ ar.id, sc_all, pgroup });
 				}
 
 				std::sort(conv_armies.begin(), conv_armies.end(), [](conv_army const& a, conv_army const& b) {
@@ -5386,10 +5522,8 @@ void update_land_constructions(sys::state& state) {
 				auto adjust_stack_comp = [&](ai_detail::stack_composition& comp, dcon::unit_type_id uid, int32_t delta) {
 					if(!uid)
 						return;
-					auto& bdef = state.military_definitions.unit_base_definitions[uid];
-					auto stats = state.world.nation_get_unit_stats(n, uid);
-					auto& d = (stats.discipline_or_evasion > 0.0f) ? stats : bdef;
-					if(ai_detail::is_backline_unit(state, n, uid)) {
+					auto d = ai_detail::get_effective_unit_stats(state, n, uid);
+					if(d.support > 0.0f) {
 						comp.backline += delta;
 					} else {
 						comp.frontline += delta;
@@ -5424,90 +5558,104 @@ void update_land_constructions(sys::state& state) {
 						if(!cur_type)
 							continue;
 						bool pc = pop.get_is_primary_or_accepted_culture();
-						auto pick_inf = (pc && pc_inf_type) ? pc_inf_type : inf_type;
-						auto pick_art = (pc && pc_art_type) ? pc_art_type : art_type;
+						auto pick_front = (pc && pc_inf_type) ? pc_inf_type : inf_type;
+						auto pick_back = (pc && pc_art_type) ? pc_art_type : art_type;
 						auto pick_rec = (pc && pc_recon_type) ? pc_recon_type : recon_type;
 						auto pick_sg = (pc && pc_siege_type) ? pc_siege_type : siege_type;
 
-						auto const& cur_bdef = state.military_definitions.unit_base_definitions[cur_type];
-						auto cur_stats = state.world.nation_get_unit_stats(n, cur_type);
-						auto const& cur_d = (cur_stats.discipline_or_evasion > 0.0f) ? cur_stats : cur_bdef;
-						bool cur_is_back = ai_detail::is_backline_unit(state, n, cur_type);
-						bool is_irregular = (cur_type == state.military_definitions.irregular);
+						auto cur_d = ai_detail::get_effective_unit_stats(state, n, cur_type);
+						bool cur_is_back = (cur_d.support > 0.0f);
+						bool cur_has_recon = (cur_d.reconnaissance_or_fire_range > 0.0f);
+						bool cur_has_siege = (cur_d.siege_or_torpedo_attack > 0.0f);
+						float cur_front_pwr = ai_detail::evaluate_frontline_power(cur_d);
+						float cur_back_pwr = ai_detail::evaluate_backline_power(cur_d);
+						float best_front_pwr = pick_front ? ai_detail::evaluate_frontline_power(ai_detail::get_effective_unit_stats(state, n, pick_front)) : 0.0f;
+						float best_back_pwr = pick_back ? ai_detail::evaluate_backline_power(ai_detail::get_effective_unit_stats(state, n, pick_back)) : 0.0f;
 
 						// Converting 1 frontline regiment -> 1 backline regiment ALWAYS preserves >= +1 frontline buffer in-stack
 						// (e.g. 10 regs -> up to 6 front / 4 back; 12 regs -> up to 7 front / 5 back) AND nation-wide!
 						bool can_swap_front_to_back = (!cur_is_back)
+							&& has_backline_units
 							&& (ca.sc.frontline - 1 >= ca.sc.backline + 2)
 							&& (ca.sc.backline < core_backline_target)
 							&& (num_frontline - 1 >= num_backline + 2);
 
+						// Concentrate offensive-only utility (recon/siege) in designated Strike Corps, leaving Line 1 holding cores pure!
+						bool stack_already_offensive = (ca.sc.recon > 0 || ca.sc.siege > 0);
+						bool stack_wants_offensive_role = stack_already_offensive || (existing_offensive_cores < target_offensive_cores && ca.sc.total >= 6);
+
+						// Purely stat-driven obsolescence check (catches Irregulars, Medieval Peasant Levies, obsolete militia,
+						// while NEVER deleting strong shock/flanking units like Medieval Heavy Knights or early Cuirassiers!)
+						float obsolete_ratio = (nation_cw >= 18 && cur_d.maneuver >= 2.0f) ? 0.70f : 0.85f;
+						bool is_obsolete_front = (!cur_is_back) && (!cur_has_recon) && (!cur_has_siege)
+							&& pick_front && (pick_front != cur_type)
+							&& (cur_front_pwr < best_front_pwr * obsolete_ratio);
+
+						// Excess offensive-only utility beyond Strike Corps needs (never blindly overwriting working Dragoons!)
+						bool is_excess_recon = cur_has_recon && !cur_has_siege && (cur_type != pick_front) && (cur_type != pick_back)
+							&& ((ca.sc.recon > 1 && num_recon > target_recon) || (num_recon > target_recon + 3));
+						bool is_excess_siege = cur_has_siege && !cur_has_recon && (cur_type != pick_front) && (cur_type != pick_back)
+							&& ((ca.sc.siege > 1 && num_siege > target_siege) || (num_siege > target_siege + 3));
+
 						dcon::unit_type_id new_type;
 
-						if(is_irregular) {
-							if(can_swap_front_to_back && num_siege < target_siege && ca.sc.siege == 0 && pick_sg && ai_detail::is_backline_unit(state, n, pick_sg) && num_backline < art_cap && can_convert_to(reg.id, pick_sg)) {
+						if(is_obsolete_front) {
+							if(can_swap_front_to_back && stack_wants_offensive_role && num_siege < target_siege && ca.sc.siege == 0 && pick_sg && ai_detail::is_backline_unit(state, n, pick_sg) && num_backline < art_cap && can_convert_to(reg.id, pick_sg)) {
 								new_type = pick_sg;
-							} else if(can_swap_front_to_back && num_backline < art_cap && pick_art && can_convert_to(reg.id, pick_art)) {
-								new_type = pick_art;
-							} else if(num_recon < target_recon && ca.sc.recon == 0 && pick_rec && !ai_detail::is_backline_unit(state, n, pick_rec) && can_convert_to(reg.id, pick_rec)) {
+							} else if(can_swap_front_to_back && num_backline < art_cap && pick_back && can_convert_to(reg.id, pick_back)) {
+								new_type = pick_back;
+							} else if(stack_wants_offensive_role && num_recon < target_recon && ca.sc.recon == 0 && pick_rec && !ai_detail::is_backline_unit(state, n, pick_rec) && can_convert_to(reg.id, pick_rec)) {
 								new_type = pick_rec;
-							} else if(pick_inf && pick_inf != cur_type && can_convert_to(reg.id, pick_inf)) {
-								new_type = pick_inf;
+							} else if(can_convert_to(reg.id, pick_front)) {
+								new_type = pick_front;
 							}
-						} else if(cur_bdef.type == military::unit_type::cavalry) {
-							bool is_useless_cav = (cur_d.reconnaissance_or_fire_range <= 0.0f); // e.g. Cuirassiers
-							bool is_excess_cav = (!is_useless_cav) && ((ca.sc.recon > 1 && num_recon > target_recon) || (ca.sc.backline == 0 && num_recon > target_recon + 2));
-							if(!is_useless_cav && !is_excess_cav) {
-								// Keep recon slot, upgrade Dragoon/Cavalry -> Hussar when available
-								if(pick_rec && !ai_detail::is_backline_unit(state, n, pick_rec) && pick_rec != cur_type
-									&& military::is_cavalry_better(state, n, cur_type, pick_rec) && can_convert_to(reg.id, pick_rec)) {
-									new_type = pick_rec;
-								}
-							} else {
-								if(is_useless_cav && num_recon < target_recon && ca.sc.recon == 0 && pick_rec && !ai_detail::is_backline_unit(state, n, pick_rec) && can_convert_to(reg.id, pick_rec)) {
-									new_type = pick_rec;
-								} else if(can_swap_front_to_back && num_siege < target_siege && ca.sc.siege == 0 && pick_sg && ai_detail::is_backline_unit(state, n, pick_sg) && num_backline < art_cap && can_convert_to(reg.id, pick_sg)) {
-									new_type = pick_sg;
-								} else if(can_swap_front_to_back && num_backline < art_cap && pick_art && can_convert_to(reg.id, pick_art)) {
-									new_type = pick_art;
-								} else if(pick_inf && pick_inf != state.military_definitions.irregular && can_convert_to(reg.id, pick_inf)) {
-									new_type = pick_inf;
-								}
+						} else if(is_excess_recon || is_excess_siege) {
+							if(can_swap_front_to_back && stack_wants_offensive_role && num_siege < target_siege && ca.sc.siege == 0 && pick_sg && ai_detail::is_backline_unit(state, n, pick_sg) && num_backline < art_cap && can_convert_to(reg.id, pick_sg)) {
+								new_type = pick_sg;
+							} else if(can_swap_front_to_back && num_backline < art_cap && pick_back && can_convert_to(reg.id, pick_back)) {
+								new_type = pick_back;
+							} else if(cur_is_back && pick_back && pick_back != cur_type && can_convert_to(reg.id, pick_back)) {
+								new_type = pick_back;
+							} else if(!cur_is_back && pick_front && pick_front != cur_type && can_convert_to(reg.id, pick_front)) {
+								new_type = pick_front;
 							}
-						} else if(cur_bdef.type == military::unit_type::infantry) {
-							if(num_recon < target_recon && ca.sc.recon == 0 && ca.sc.total >= 4 && pick_rec && !ai_detail::is_backline_unit(state, n, pick_rec) && can_convert_to(reg.id, pick_rec)) {
+						} else if(!cur_is_back && !cur_has_recon && !cur_has_siege) {
+							// Standard frontline regiment: convert surplus in-place into Strike Corps utility or Backline firepower
+							if(stack_wants_offensive_role && num_recon < target_recon && ca.sc.recon == 0 && ca.sc.total >= 4 && pick_rec && !ai_detail::is_backline_unit(state, n, pick_rec) && can_convert_to(reg.id, pick_rec)) {
 								new_type = pick_rec;
-							} else if(num_recon < target_recon && ca.sc.recon == 0 && can_swap_front_to_back && num_backline < art_cap && pick_rec && ai_detail::is_backline_unit(state, n, pick_rec) && can_convert_to(reg.id, pick_rec)) {
+							} else if(stack_wants_offensive_role && num_recon < target_recon && ca.sc.recon == 0 && can_swap_front_to_back && num_backline < art_cap && pick_rec && ai_detail::is_backline_unit(state, n, pick_rec) && can_convert_to(reg.id, pick_rec)) {
 								new_type = pick_rec;
-							} else if(num_siege < target_siege && ca.sc.siege == 0 && pick_sg && can_convert_to(reg.id, pick_sg)
+							} else if(stack_wants_offensive_role && num_siege < target_siege && ca.sc.siege == 0 && pick_sg && can_convert_to(reg.id, pick_sg)
 								&& (ai_detail::is_backline_unit(state, n, pick_sg) ? (can_swap_front_to_back && num_backline < art_cap) : (ca.sc.total >= 4))) {
 								new_type = pick_sg;
-							} else if(can_swap_front_to_back && num_backline < art_cap && pick_art && can_convert_to(reg.id, pick_art)) {
-								new_type = pick_art;
-							} else if(pick_inf && pick_inf != cur_type && military::is_infantry_better(state, n, cur_type, pick_inf) && can_convert_to(reg.id, pick_inf)) {
-								new_type = pick_inf;
+							} else if(can_swap_front_to_back && num_backline < art_cap && pick_back && can_convert_to(reg.id, pick_back)) {
+								new_type = pick_back;
 							}
-						} else if(cur_bdef.type == military::unit_type::support) {
-							if(pick_art && pick_art != cur_type && military::is_artillery_better(state, n, cur_type, pick_art) && can_convert_to(reg.id, pick_art)) {
-								new_type = pick_art;
-							}
-						} else if(cur_bdef.type == military::unit_type::special) {
-							// Never downgrade special units (engineers/tanks/planes) into cavalry!
-							if(pick_sg && pick_sg != cur_type && cur_d.siege_or_torpedo_attack > 0.0f && can_convert_to(reg.id, pick_sg)) {
-								auto new_stats = state.world.nation_get_unit_stats(n, pick_sg);
-								auto const& new_d = (new_stats.discipline_or_evasion > 0.0f) ? new_stats : state.military_definitions.unit_base_definitions[pick_sg];
-								if(new_d.siege_or_torpedo_attack > cur_d.siege_or_torpedo_attack) {
+						} else if(cur_is_back) {
+							// Backline unit: only upgrade if a genuinely much stronger backline unit unlocked (never overwrite needed siege/recon!)
+							if(!cur_has_siege && !cur_has_recon && pick_back && pick_back != cur_type && best_back_pwr > cur_back_pwr * 1.25f && can_convert_to(reg.id, pick_back)) {
+								new_type = pick_back;
+							} else if(cur_has_siege && pick_sg && pick_sg != cur_type && can_convert_to(reg.id, pick_sg)) {
+								auto new_sg_d = ai_detail::get_effective_unit_stats(state, n, pick_sg);
+								if(new_sg_d.siege_or_torpedo_attack > cur_d.siege_or_torpedo_attack) {
 									new_type = pick_sg;
 								}
 							}
 						}
 
 						if(new_type && new_type != cur_type) {
+							bool was_off_core = (ca.sc.backline > 0 || !has_backline_units) && (ca.sc.recon > 0 || ca.sc.siege > 0);
 							military::upgrade_regiment(state, reg.id, new_type);
 							adjust_unit_counts(cur_type, -1);
 							adjust_unit_counts(new_type, 1);
 							adjust_stack_comp(ca.sc, cur_type, -1);
 							adjust_stack_comp(ca.sc, new_type, 1);
+							bool now_off_core = (ca.sc.backline > 0 || !has_backline_units) && (ca.sc.recon > 0 || ca.sc.siege > 0);
+							if(!was_off_core && now_off_core) {
+								++existing_offensive_cores;
+							} else if(was_off_core && !now_off_core && existing_offensive_cores > 0) {
+								--existing_offensive_cores;
+							}
 							++conversions_done;
 							++stack_convs;
 							++unfull_regular;
@@ -5671,11 +5819,15 @@ void new_units_and_merging(sys::state& state) {
 
 			bool host_is_core = (hsc.backline > 0);
 			if(joining_is_backline) {
-				// NEVER push backline above frontline cover (prevents exposed 3/0/5 artillery stacks!)
+				// NEVER push backline above frontline cover (prevents exposed artillery stacks!)
 				if(hsc.backline + joining_count > hsc.frontline)
 					return 0;
 				if(host_is_core && hsc.backline + joining_count <= core_backline_target) {
-					return (joining_is_siege && hsc.siege == 0) ? 4 : 3;
+					if(joining_is_siege && hsc.siege == 0) {
+						// Cluster siege into Strike Corps (stacks that already have recon!) rather than defensive holding cores
+						return (hsc.recon > 0) ? 5 : 4;
+					}
+					return 3;
 				}
 				if(!host_is_core && hsc.frontline >= 4 && joining_count <= core_backline_target) {
 					return 2;
@@ -5683,9 +5835,12 @@ void new_units_and_merging(sys::state& state) {
 				return 0;
 			}
 			if(joining_is_recon) {
-				// Recon prefers core stacks that still lack recon
+				// Cluster recon into Strike Corps (core stacks that already have siege!) rather than diluting defensive holding cores
 				if(host_is_core && hsc.recon < 2 && hsc.frontline + joining_count <= core_backline_target + 4) {
-					return hsc.recon == 0 ? 4 : 2;
+					if(hsc.recon == 0) {
+						return (hsc.siege > 0) ? 5 : 4;
+					}
+					return 2;
 				}
 				if(!host_is_core && hsc.total + joining_count <= reserve_stack_target && hsc.recon == 0) {
 					return 1;
