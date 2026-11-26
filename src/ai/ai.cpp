@@ -1564,7 +1564,10 @@ struct walkable_theater_map {
 			float nb_lvl = float(state.world.province_get_building_level(p, uint8_t(economy::province_building_type::naval_base)));
 			float sl = float(std::min(60, military::supply_limit_in_province(state, n, p)));
 			float tp = logistics::calculate_supply_throughput_in_province(state, p, n);
-			float cost = ref_km + sea_km * 0.25f - nb_lvl * 140.0f - sl * 6.0f + (tp <= 0.0f ? 2500.0f : 0.0f);
+			float port_cap = logistics::port_supply_capacity_in_province(state, p, n);
+			float cost = ref_km + sea_km * 0.25f - nb_lvl * 140.0f - sl * 6.0f
+				+ (tp <= 0.0f ? 2500.0f : 0.0f)
+				+ (port_cap <= 0.0f ? 4000.0f : 0.0f);
 			if(p == ref_prov) {
 				cost -= 2000.0f;
 			}
