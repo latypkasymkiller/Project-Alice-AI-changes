@@ -4952,9 +4952,14 @@ inline bool is_backline_unit(sys::state const& state, dcon::nation_id n, dcon::u
 	return get_effective_unit_stats(state, n, uid).support > 0.0f;
 }
 
-inline float estimate_unit_economic_cost(sys::state const& state, dcon::unit_type_id uid) {
+struct unit_cost_profile {
+	float daily_upkeep = 0.0f;
+	float build_money = 0.0f;
+};
+
+inline unit_cost_profile estimate_unit_cost_profile(sys::state const& state, dcon::nation_id n, dcon::unit_type_id uid) {
 	if(!uid)
-		return 1e9f;
+		return unit_cost_profile{ 1e6f, 1e9f };
 	auto const& bdef = state.military_definitions.unit_base_definitions[uid];
 	auto set_cost = [&](economy::commodity_set const& cs) -> float {
 		float total = 0.0f;
@@ -4970,8 +4975,129 @@ inline float estimate_unit_economic_cost(sys::state const& state, dcon::unit_typ
 		}
 		return total;
 	};
+	float nat_sup_mod = n ? state.world.nation_get_modifier_values(n, sys::national_mod_offsets::supply_consumption) : 0.0f;
+	float unit_sup_mod = get_effective_unit_stats(state, n, uid).supply_consumption;
+	float supply_mult = std::max(0.01f, nat_sup_mod + unit_sup_mod);
+	return unit_cost_profile{ set_cost(bdef.supply_cost) * supply_mult, set_cost(bdef.build_cost) };
+}
+
+inline float estimate_unit_economic_cost(sys::state const& state, dcon::nation_id n, dcon::unit_type_id uid) {
+	auto cp = estimate_unit_cost_profile(state, n, uid);
 	// 1x build cost + 180 days of daily supply upkeep (naturally avoids overpriced luxury elites like Guards for mass frontline!)
-	return std::max(1.0f, set_cost(bdef.build_cost) + set_cost(bdef.supply_cost) * 180.0f);
+	return std::max(1.0f, cp.build_money + cp.daily_upkeep * 180.0f);
+}
+
+// Computes how many regiments of unit type `uid` nation `n` can ACTUALLY afford & supply on its real economy + national markets!
+// Prevents both failure modes:
+//   1. Never chokes mass army on unaffordable/scarce super-units (e.g. expensive Tanks with high support/siege),
+//   2. Lets rich industrial powers actually field expensive high-stat units up to their real budget & factory supply cap!
+inline int32_t estimate_sustainable_regiment_cap(
+	sys::state& state,
+	dcon::nation_id n,
+	dcon::unit_type_id uid,
+	float effective_daily_income,
+	float treasury,
+	float budget_share
+) {
+	if(!uid)
+		return 0;
+	auto const& bdef = state.military_definitions.unit_base_definitions[uid];
+	auto cp = estimate_unit_cost_profile(state, n, uid);
+	// Daily budget allocated to this role (plus amortized treasury cushion)
+	float daily_budget = std::max(0.5f, effective_daily_income * budget_share + std::max(0.0f, treasury) / 365.0f * 0.20f);
+	// Sustainment cost: daily upkeep + build cost amortized over 2 years (730 days)
+	float amortized_daily_cost = std::max(0.05f, cp.daily_upkeep + cp.build_money / 730.0f);
+	int32_t budget_cap = std::clamp(int32_t(daily_budget / amortized_daily_cost), 0, 10000);
+	if(budget_cap <= 0)
+		return 0;
+
+	// Market goods throughput limit across ALL controlled state markets of nation `n`
+	float nat_sup_mod = state.world.nation_get_modifier_values(n, sys::national_mod_offsets::supply_consumption);
+	float unit_sup_mod = get_effective_unit_stats(state, n, uid).supply_consumption;
+	float supply_mult = std::max(0.01f, nat_sup_mod + unit_sup_mod);
+	float build_amort_days = std::max(120.0f, float(bdef.build_time) * 3.0f);
+	bool is_civ = state.world.nation_get_is_civilized(n);
+
+	auto states_ctrl = state.world.nation_get_state_control(n);
+	bool has_any_market = (states_ctrl.begin() != states_ctrl.end());
+	dcon::market_id fallback_market;
+	if(!has_any_market) {
+		auto cap = state.world.nation_get_capital(n);
+		if(cap) {
+			fallback_market = state.world.state_instance_get_market_from_local_market(state.world.province_get_state_membership(cap));
+		}
+	}
+
+	auto check_commodity_cap = [&](dcon::commodity_id cid, float build_amt, float supply_amt) -> int32_t {
+		if(!cid || (build_amt <= 0.0f && supply_amt <= 0.0f))
+			return 10000;
+		float total_stockpile = 0.0f;
+		float total_supply = 0.0f;
+		float total_demand = 0.0f;
+		if(has_any_market) {
+			for(auto sc : states_ctrl) {
+				auto m = state.world.state_instance_get_market_from_local_market(sc.get_state());
+				if(!m)
+					continue;
+				total_stockpile += state.world.market_get_government_stockpile(m, cid);
+				total_supply += state.world.market_get_aggregated_supply_history(m, cid);
+				total_demand += state.world.market_get_aggregated_demand_history(m, cid);
+			}
+		} else if(fallback_market) {
+			total_stockpile = state.world.market_get_government_stockpile(fallback_market, cid);
+			total_supply = state.world.market_get_aggregated_supply_history(fallback_market, cid);
+			total_demand = state.world.market_get_aggregated_demand_history(fallback_market, cid);
+		} else {
+			return 10000;
+		}
+
+		// Start-of-game goods with ~0 prior demand in a civilized nation: trade routes import once demand begins
+		if(is_civ && state.world.commodity_get_is_available_from_start(cid) && total_demand <= 0.05f) {
+			return 10000;
+		}
+		float daily_need = supply_amt * supply_mult + build_amt / build_amort_days;
+		if(daily_need <= 0.0001f)
+			return 10000;
+		float avail_daily = total_supply * 0.70f + total_stockpile / 90.0f;
+		if(avail_daily <= 0.0f)
+			return 0;
+		return std::clamp(int32_t(avail_daily / daily_need), 0, 10000);
+	};
+
+	int32_t goods_cap = 10000;
+	for(uint32_t i = 0; i < economy::commodity_set::set_size; ++i) {
+		auto cid = bdef.build_cost.commodity_type[i];
+		if(!cid)
+			break;
+		float sup_amt = 0.0f;
+		for(uint32_t j = 0; j < economy::commodity_set::set_size; ++j) {
+			if(bdef.supply_cost.commodity_type[j] == cid) {
+				sup_amt = bdef.supply_cost.commodity_amounts[j];
+				break;
+			}
+		}
+		goods_cap = std::min(goods_cap, check_commodity_cap(cid, bdef.build_cost.commodity_amounts[i], sup_amt));
+		if(goods_cap <= 0)
+			return 0;
+	}
+	for(uint32_t j = 0; j < economy::commodity_set::set_size; ++j) {
+		auto cid = bdef.supply_cost.commodity_type[j];
+		if(!cid)
+			break;
+		bool already_checked = false;
+		for(uint32_t i = 0; i < economy::commodity_set::set_size; ++i) {
+			if(bdef.build_cost.commodity_type[i] == cid) {
+				already_checked = true;
+				break;
+			}
+		}
+		if(!already_checked) {
+			goods_cap = std::min(goods_cap, check_commodity_cap(cid, 0.0f, bdef.supply_cost.commodity_amounts[j]));
+			if(goods_cap <= 0)
+				return 0;
+		}
+	}
+	return std::min(budget_cap, goods_cap);
 }
 
 inline float evaluate_frontline_power(sys::unit_variable_stats const& d) {
@@ -4991,9 +5117,14 @@ inline float evaluate_backline_power(sys::unit_variable_stats const& d) {
 	return (0.50f * off_dmg + 0.50f * def_dmg) * d.support;
 }
 
-inline dcon::unit_type_id get_best_frontline_unit(sys::state& state, dcon::nation_id n, bool primary_culture) {
-	// Stat + cost-efficiency driven across ALL unlocked land units (zero unit_type:: enum hardcoding — works in ANY mod!)
-	auto pick_pass = [&](bool require_zero_support, bool check_shortage) -> dcon::unit_type_id {
+struct role_unit_pair {
+	dcon::unit_type_id primary;  // Best combat unit affordable for at least 1 regiment (e.g. Tanks/Airplanes when affordable!)
+	dcon::unit_type_id fallback; // Most affordable reliable backup once `primary` hits its real budget/supply cap (e.g. Engineers/Hussars!)
+};
+
+inline dcon::unit_type_id get_best_frontline_unit(sys::state& state, dcon::nation_id n, bool primary_culture, int32_t min_sustainable, std::vector<int32_t> const& cap_by_type) {
+	// Stat + cost-efficiency + real affordability driven across ALL unlocked land units (zero unit_type:: hardcoding!)
+	auto pick_pass = [&](bool require_zero_support, int32_t min_cap, bool check_shortage) -> dcon::unit_type_id {
 		dcon::unit_type_id best;
 		float best_score = -1.0f;
 		for(uint32_t i = 2; i < state.military_definitions.unit_base_definitions.size(); ++i) {
@@ -5008,10 +5139,12 @@ inline dcon::unit_type_id get_best_frontline_unit(sys::state& state, dcon::natio
 			auto d = get_effective_unit_stats(state, n, uid);
 			if(require_zero_support && d.support > 0.0f)
 				continue;
+			if(min_cap > 0 && (i >= cap_by_type.size() || cap_by_type[i] < min_cap))
+				continue;
 			if(check_shortage && unit_type_has_build_shortage(state, n, uid))
 				continue;
 			float power = evaluate_frontline_power(d);
-			float cost = estimate_unit_economic_cost(state, uid);
+			float cost = estimate_unit_economic_cost(state, n, uid);
 			float score = power / std::pow(cost, 0.12f);
 			if(!best || score > best_score) {
 				best = uid;
@@ -5020,18 +5153,58 @@ inline dcon::unit_type_id get_best_frontline_unit(sys::state& state, dcon::natio
 		}
 		return best;
 	};
-	if(auto u = pick_pass(true, true)) return u;
-	if(auto u = pick_pass(true, false)) return u;
-	if(auto u = pick_pass(false, true)) return u;
-	return pick_pass(false, false);
+	if(auto u = pick_pass(true, min_sustainable, true)) return u;
+	if(auto u = pick_pass(true, 1, true)) return u;
+	if(auto u = pick_pass(true, 0, false)) return u;
+	if(auto u = pick_pass(false, 1, true)) return u;
+	return pick_pass(false, 0, false);
 }
 
-inline dcon::unit_type_id get_best_backline_unit(sys::state& state, dcon::nation_id n, bool primary_culture) {
-	// Stat + cost-efficiency driven across ALL unlocked land units with support > 0 (Artillery, Medieval Archers, Rocket Art, etc.)
+inline dcon::unit_type_id get_best_backline_unit(sys::state& state, dcon::nation_id n, bool primary_culture, int32_t min_sustainable, std::vector<int32_t> const& cap_by_type) {
+	// Mass backline unit: must be sustainable for the main line (so expensive Tanks don't paralyze mass Artillery!)
+	auto pick_pass = [&](int32_t min_cap) -> dcon::unit_type_id {
+		dcon::unit_type_id best;
+		float best_score = -1.0f;
+		for(uint32_t i = 2; i < state.military_definitions.unit_base_definitions.size(); ++i) {
+			dcon::unit_type_id uid{ dcon::unit_type_id::value_base_t(i) };
+			auto const& bdef = state.military_definitions.unit_base_definitions[uid];
+			if(!bdef.is_land)
+				continue;
+			if(!state.world.nation_get_active_unit(n, uid) && !bdef.active)
+				continue;
+			if(bdef.primary_culture && !primary_culture)
+				continue;
+			auto d = get_effective_unit_stats(state, n, uid);
+			if(d.support <= 0.0f)
+				continue;
+			if(min_cap > 0 && (i >= cap_by_type.size() || cap_by_type[i] < min_cap))
+				continue;
+			if(unit_type_has_build_shortage(state, n, uid))
+				continue;
+			float power = evaluate_backline_power(d);
+			float cost = estimate_unit_economic_cost(state, n, uid);
+			float score = power / std::pow(cost, 0.08f);
+			if(!best || score > best_score) {
+				best = uid;
+				best_score = score;
+			}
+		}
+		return best;
+	};
+	if(auto u = pick_pass(min_sustainable)) return u;
+	return pick_pass(1);
+}
+
+inline dcon::unit_type_id get_best_elite_backline_unit(sys::state& state, dcon::nation_id n, bool primary_culture, dcon::unit_type_id mass_back_uid, std::vector<int32_t> const& cap_by_type) {
+	// Highest raw backline firepower unit (e.g. expensive Tanks/Heavy Siege with highest support in a mod!)
+	// Built strictly up to its real sustainable budget/supply cap inside Strike Corps — NEVER blocking mass Artillery!
+	float mass_power = mass_back_uid ? evaluate_backline_power(get_effective_unit_stats(state, n, mass_back_uid)) : 0.0f;
 	dcon::unit_type_id best;
-	float best_score = -1.0f;
+	float best_power = mass_power * 1.15f;
 	for(uint32_t i = 2; i < state.military_definitions.unit_base_definitions.size(); ++i) {
 		dcon::unit_type_id uid{ dcon::unit_type_id::value_base_t(i) };
+		if(uid == mass_back_uid)
+			continue;
 		auto const& bdef = state.military_definitions.unit_base_definitions[uid];
 		if(!bdef.is_land)
 			continue;
@@ -5039,26 +5212,30 @@ inline dcon::unit_type_id get_best_backline_unit(sys::state& state, dcon::nation
 			continue;
 		if(bdef.primary_culture && !primary_culture)
 			continue;
+		if(i >= cap_by_type.size() || cap_by_type[i] < 1)
+			continue;
 		auto d = get_effective_unit_stats(state, n, uid);
 		if(d.support <= 0.0f)
 			continue;
 		if(unit_type_has_build_shortage(state, n, uid))
 			continue;
 		float power = evaluate_backline_power(d);
-		float cost = estimate_unit_economic_cost(state, uid);
-		float score = power / std::pow(cost, 0.08f);
-		if(!best || score > best_score) {
+		if(power > best_power) {
 			best = uid;
-			best_score = score;
+			best_power = power;
 		}
 	}
 	return best;
 }
 
-inline dcon::unit_type_id get_best_recon_unit(sys::state& state, dcon::nation_id n, bool primary_culture) {
-	// Stat + cost-efficiency driven across ALL unlocked land units with recon > 0 (zero unit_type:: enum hardcoding!)
-	dcon::unit_type_id best;
-	float best_score = -1.0f;
+inline role_unit_pair get_best_recon_units(sys::state& state, dcon::nation_id n, bool primary_culture, int32_t target_count, std::vector<int32_t> const& cap_by_type) {
+	// Primary: highest raw recon+combat unit sustainable for >= 1 reg (e.g. Airplanes);
+	// Fallback: best recon unit sustainable for the full target_count (e.g. Hussars/Dragoons)!
+	role_unit_pair res{};
+	float best_pri = -1.0f;
+	float best_fb = -1.0f;
+	int32_t fb_need = std::max(1, target_count);
+
 	for(uint32_t i = 2; i < state.military_definitions.unit_base_definitions.size(); ++i) {
 		dcon::unit_type_id uid{ dcon::unit_type_id::value_base_t(i) };
 		auto const& bdef = state.military_definitions.unit_base_definitions[uid];
@@ -5071,23 +5248,35 @@ inline dcon::unit_type_id get_best_recon_unit(sys::state& state, dcon::nation_id
 		auto d = get_effective_unit_stats(state, n, uid);
 		if(d.reconnaissance_or_fire_range <= 0.0f)
 			continue;
+		int32_t cap = (i < cap_by_type.size()) ? cap_by_type[i] : 0;
+		if(cap < 1)
+			continue;
 		if(unit_type_has_build_shortage(state, n, uid))
 			continue;
 		float combat = (d.support > 0.0f) ? evaluate_backline_power(d) : evaluate_frontline_power(d);
-		float cost = estimate_unit_economic_cost(state, uid);
-		float score = (d.reconnaissance_or_fire_range * 10.0f + combat * 2.0f + d.maneuver * 0.4f) / std::pow(cost, 0.08f);
-		if(!best || score > best_score) {
-			best = uid;
-			best_score = score;
+		float raw_score = d.reconnaissance_or_fire_range * 10.0f + combat * 2.0f + d.maneuver * 0.4f;
+		if(!res.primary || raw_score > best_pri) {
+			res.primary = uid;
+			best_pri = raw_score;
+		}
+		float cost = estimate_unit_economic_cost(state, n, uid);
+		float fb_score = (raw_score / std::pow(cost, 0.12f)) * (cap >= fb_need ? 2.0f : 1.0f);
+		if(!res.fallback || fb_score > best_fb) {
+			res.fallback = uid;
+			best_fb = fb_score;
 		}
 	}
-	return best;
+	return res;
 }
 
-inline dcon::unit_type_id get_best_siege_unit(sys::state& state, dcon::nation_id n, bool primary_culture) {
-	// Stat + cost-efficiency driven across ALL unlocked land units with siege > 0 (zero unit_type:: enum hardcoding!)
-	dcon::unit_type_id best;
-	float best_score = -1.0f;
+inline role_unit_pair get_best_siege_units(sys::state& state, dcon::nation_id n, bool primary_culture, int32_t target_count, std::vector<int32_t> const& cap_by_type) {
+	// Primary: highest raw siege+combat unit sustainable for >= 1 reg (e.g. Tanks!);
+	// Fallback: best siege unit sustainable for the full target_count (e.g. Engineers!) when Tanks hit budget/barrel cap!
+	role_unit_pair res{};
+	float best_pri = -1.0f;
+	float best_fb = -1.0f;
+	int32_t fb_need = std::max(1, target_count);
+
 	for(uint32_t i = 2; i < state.military_definitions.unit_base_definitions.size(); ++i) {
 		dcon::unit_type_id uid{ dcon::unit_type_id::value_base_t(i) };
 		auto const& bdef = state.military_definitions.unit_base_definitions[uid];
@@ -5100,17 +5289,25 @@ inline dcon::unit_type_id get_best_siege_unit(sys::state& state, dcon::nation_id
 		auto d = get_effective_unit_stats(state, n, uid);
 		if(d.siege_or_torpedo_attack <= 0.0f)
 			continue;
+		int32_t cap = (i < cap_by_type.size()) ? cap_by_type[i] : 0;
+		if(cap < 1)
+			continue;
 		if(unit_type_has_build_shortage(state, n, uid))
 			continue;
 		float combat = (d.support > 0.0f) ? evaluate_backline_power(d) : evaluate_frontline_power(d);
-		float cost = estimate_unit_economic_cost(state, uid);
-		float score = (d.siege_or_torpedo_attack * 10.0f + combat * 2.0f) / std::pow(cost, 0.08f);
-		if(!best || score > best_score) {
-			best = uid;
-			best_score = score;
+		float raw_score = d.siege_or_torpedo_attack * 10.0f + combat * 2.0f;
+		if(!res.primary || raw_score > best_pri) {
+			res.primary = uid;
+			best_pri = raw_score;
+		}
+		float cost = estimate_unit_economic_cost(state, n, uid);
+		float fb_score = (raw_score / std::pow(cost, 0.12f)) * (cap >= fb_need ? 2.0f : 1.0f);
+		if(!res.fallback || fb_score > best_fb) {
+			res.fallback = uid;
+			best_fb = fb_score;
 		}
 	}
-	return best;
+	return res;
 }
 
 inline int32_t calculate_nation_artillery_cap(sys::state& state, dcon::nation_id n, int32_t desired_army) {
@@ -5367,19 +5564,16 @@ void update_land_constructions(sys::state& state) {
 		int32_t unfull_regular = 0;
 		int32_t total_building = 0;
 
-		// Pure stat + cost-efficiency role discovery across ALL unlocked land units (100% mod-agnostic — zero unit_type:: hardcoding!)
-		auto inf_type = ai_detail::get_best_frontline_unit(state, n, false);
-		auto pc_inf_type = ai_detail::get_best_frontline_unit(state, n, true);
-		auto art_type = ai_detail::get_best_backline_unit(state, n, false);
-		auto pc_art_type = ai_detail::get_best_backline_unit(state, n, true);
-		auto recon_type = ai_detail::get_best_recon_unit(state, n, false);
-		auto pc_recon_type = ai_detail::get_best_recon_unit(state, n, true);
-		auto siege_type = ai_detail::get_best_siege_unit(state, n, false);
-		auto pc_siege_type = ai_detail::get_best_siege_unit(state, n, true);
+		size_t const unit_type_count = state.military_definitions.unit_base_definitions.size();
+		std::vector<int32_t> count_by_type(unit_type_count, 0);
 
 		auto adjust_unit_counts = [&](dcon::unit_type_id uid, int32_t delta) {
 			if(!uid)
 				return;
+			size_t idx = size_t(uid.index());
+			if(idx < count_by_type.size()) {
+				count_by_type[idx] += delta;
+			}
 			auto d = ai_detail::get_effective_unit_stats(state, n, uid);
 			if(d.support > 0.0f) {
 				num_backline += delta;
@@ -5419,14 +5613,47 @@ void update_land_constructions(sys::state& state) {
 			adjust_unit_counts(uid, 1);
 		});
 
-		// Compute composition targets BEFORE conversion and BEFORE checking num_to_build_nation <= 0!
-		// Size targets against actual standing regular army (or desired_army if expanding), excluding temporary mobilized brigades.
+		// Compute composition targets & real economic + market-supply affordability caps per unit type!
 		int32_t desired_army = int32_t(calculate_desired_army_size(state, n));
 		int32_t composition_army_basis = std::max(desired_army, total_regular_existing);
-		bool has_backline_units = bool(art_type || pc_art_type);
-		int32_t art_cap = has_backline_units ? ai_detail::calculate_nation_artillery_cap(state, n, composition_army_basis) : 0;
 		int32_t nation_cw = ai_detail::estimate_nation_base_combat_width(state, n);
 		int32_t supply_cap_regs = ai_detail::typical_supply_regiment_cap(state, n);
+
+		float daily_income = economy::estimate_daily_income_ai(state, n.id);
+		float treasury = n.get_treasury();
+		// Floor against existing army baseline so temporary wartime income dips don't zero-out standard infantry/artillery
+		float effective_daily_income = std::max({ daily_income, treasury / 180.0f, float(std::max(1, total_regular_existing)) * 1.5f });
+
+		std::vector<int32_t> cap_mass_front(unit_type_count, 0);
+		std::vector<int32_t> cap_mass_back(unit_type_count, 0);
+		std::vector<int32_t> cap_strike_special(unit_type_count, 0);
+		for(uint32_t i = 2; i < unit_type_count; ++i) {
+			dcon::unit_type_id uid{ dcon::unit_type_id::value_base_t(i) };
+			auto const& bdef = state.military_definitions.unit_base_definitions[uid];
+			if(!bdef.is_land)
+				continue;
+			if(!state.world.nation_get_active_unit(n, uid) && !bdef.active)
+				continue;
+			cap_mass_front[i] = ai_detail::estimate_sustainable_regiment_cap(state, n.id, uid, effective_daily_income, treasury, 0.65f);
+			cap_mass_back[i] = ai_detail::estimate_sustainable_regiment_cap(state, n.id, uid, effective_daily_income, treasury, 0.50f);
+			cap_strike_special[i] = ai_detail::estimate_sustainable_regiment_cap(state, n.id, uid, effective_daily_income, treasury, 0.25f);
+		}
+
+		// Estimate tentative backline & offensive strike needs before picking capacity-matched units
+		int32_t raw_art_cap = ai_detail::calculate_nation_artillery_cap(state, n, composition_army_basis);
+		int32_t min_front_cap = std::max(4, composition_army_basis / 2);
+		int32_t min_back_cap = std::max(3, raw_art_cap / 2);
+
+		// Pure stat + cost + affordability role discovery across ALL unlocked land units (100% mod-agnostic!)
+		auto inf_type = ai_detail::get_best_frontline_unit(state, n, false, min_front_cap, cap_mass_front);
+		auto pc_inf_type = ai_detail::get_best_frontline_unit(state, n, true, min_front_cap, cap_mass_front);
+		auto art_type = ai_detail::get_best_backline_unit(state, n, false, min_back_cap, cap_mass_back);
+		auto pc_art_type = ai_detail::get_best_backline_unit(state, n, true, min_back_cap, cap_mass_back);
+		auto elite_back_type = ai_detail::get_best_elite_backline_unit(state, n, false, art_type, cap_strike_special);
+		auto pc_elite_back_type = ai_detail::get_best_elite_backline_unit(state, n, true, pc_art_type ? pc_art_type : art_type, cap_strike_special);
+
+		bool has_backline_units = bool(art_type || pc_art_type || elite_back_type || pc_elite_back_type);
+		int32_t art_cap = has_backline_units ? raw_art_cap : 0;
 		int32_t core_backline_target = has_backline_units ? std::clamp(std::min(nation_cw <= 14 ? nation_cw : 5, std::max(6, supply_cap_regs) / 2), 3, 10) : 0;
 		int32_t estimated_core_stacks = (has_backline_units && core_backline_target > 0)
 			? std::max(1, (art_cap + core_backline_target - 1) / core_backline_target)
@@ -5440,12 +5667,50 @@ void update_land_constructions(sys::state& state) {
 			: std::max(1, (estimated_core_stacks + 1) / 2);
 		int32_t strike_regs_per_stack = std::clamp(core_backline_target > 0 ? (core_backline_target * 2 + 2) : 10, 8, std::max(8, supply_cap_regs));
 		int32_t offensive_reg_basis = std::min(composition_army_basis, target_offensive_cores * strike_regs_per_stack);
-		int32_t target_recon = (recon_type || pc_recon_type)
-			? std::clamp(int32_t(std::round(float(offensive_reg_basis) * state.defines.recon_unit_ratio)), composition_army_basis >= 6 ? 1 : 0, std::max(1, target_offensive_cores * 2))
-			: 0;
-		int32_t target_siege = ((siege_type || pc_siege_type) && composition_army_basis >= 8)
+		int32_t est_recon_need = std::clamp(int32_t(std::round(float(offensive_reg_basis) * state.defines.recon_unit_ratio)), composition_army_basis >= 6 ? 1 : 0, std::max(1, target_offensive_cores * 2));
+		int32_t est_siege_need = (composition_army_basis >= 8)
 			? std::clamp(int32_t(std::round(float(offensive_reg_basis) * state.defines.engineer_unit_ratio)), 1, std::max(1, target_offensive_cores * 2))
 			: 0;
+
+		auto recon_pair = ai_detail::get_best_recon_units(state, n, false, est_recon_need, cap_strike_special);
+		auto pc_recon_pair = ai_detail::get_best_recon_units(state, n, true, est_recon_need, cap_strike_special);
+		auto siege_pair = ai_detail::get_best_siege_units(state, n, false, est_siege_need, cap_strike_special);
+		auto pc_siege_pair = ai_detail::get_best_siege_units(state, n, true, est_siege_need, cap_strike_special);
+
+		int32_t target_recon = (recon_pair.primary || pc_recon_pair.primary || recon_pair.fallback || pc_recon_pair.fallback) ? est_recon_need : 0;
+		int32_t target_siege = (siege_pair.primary || pc_siege_pair.primary || siege_pair.fallback || pc_siege_pair.fallback) ? est_siege_need : 0;
+
+		// Capacity-aware role pickers: pick the strongest unit (e.g. Tanks/Airplanes/Elite Support) ONLY while below its
+		// real sustainable budget & goods cap, then seamlessly fall back to the affordable backup (Engineers/Hussars/Artillery)!
+		auto pick_affordable_from_pair = [&](ai_detail::role_unit_pair const& pair) -> dcon::unit_type_id {
+			if(pair.primary) {
+				size_t idx = size_t(pair.primary.index());
+				if(idx < unit_type_count && count_by_type[idx] < cap_strike_special[idx]) {
+					return pair.primary;
+				}
+			}
+			if(pair.fallback) {
+				size_t idx = size_t(pair.fallback.index());
+				if(idx < unit_type_count && count_by_type[idx] < std::max(cap_strike_special[idx], cap_mass_back[idx])) {
+					return pair.fallback;
+				}
+			}
+			return dcon::unit_type_id{};
+		};
+
+		auto pick_affordable_elite_back = [&](bool pc, bool is_strike_stack) -> dcon::unit_type_id {
+			if(!is_strike_stack)
+				return dcon::unit_type_id{};
+			auto uid = (pc && pc_elite_back_type) ? pc_elite_back_type : elite_back_type;
+			if(!uid)
+				return dcon::unit_type_id{};
+			size_t idx = size_t(uid.index());
+			int32_t elite_quota = std::min(idx < unit_type_count ? cap_strike_special[idx] : 0, target_offensive_cores * std::max(1, core_backline_target));
+			if(idx < unit_type_count && count_by_type[idx] < elite_quota) {
+				return uid;
+			}
+			return dcon::unit_type_id{};
+		};
 
 		// Pass 2: Safe, paced, stat-driven cross-type regiment conversion via military::upgrade_regiment!
 		// Zero hardcoding of unit names or unit_type:: buckets — works in Vanilla, Medieval, Modern, or any custom mod.
@@ -5558,10 +5823,14 @@ void update_land_constructions(sys::state& state) {
 						if(!cur_type)
 							continue;
 						bool pc = pop.get_is_primary_or_accepted_culture();
+						bool stack_already_offensive = (ca.sc.recon > 0 || ca.sc.siege > 0);
+						bool stack_wants_offensive_role = stack_already_offensive || (existing_offensive_cores < target_offensive_cores && ca.sc.total >= 6);
+
 						auto pick_front = (pc && pc_inf_type) ? pc_inf_type : inf_type;
-						auto pick_back = (pc && pc_art_type) ? pc_art_type : art_type;
-						auto pick_rec = (pc && pc_recon_type) ? pc_recon_type : recon_type;
-						auto pick_sg = (pc && pc_siege_type) ? pc_siege_type : siege_type;
+						auto pick_elite_back = pick_affordable_elite_back(pc, stack_wants_offensive_role);
+						auto pick_back = pick_elite_back ? pick_elite_back : ((pc && pc_art_type) ? pc_art_type : art_type);
+						auto pick_rec = pick_affordable_from_pair(pc ? pc_recon_pair : recon_pair);
+						auto pick_sg = pick_affordable_from_pair(pc ? pc_siege_pair : siege_pair);
 
 						auto cur_d = ai_detail::get_effective_unit_stats(state, n, cur_type);
 						bool cur_is_back = (cur_d.support > 0.0f);
@@ -5579,10 +5848,6 @@ void update_land_constructions(sys::state& state) {
 							&& (ca.sc.frontline - 1 >= ca.sc.backline + 2)
 							&& (ca.sc.backline < core_backline_target)
 							&& (num_frontline - 1 >= num_backline + 2);
-
-						// Concentrate offensive-only utility (recon/siege) in designated Strike Corps, leaving Line 1 holding cores pure!
-						bool stack_already_offensive = (ca.sc.recon > 0 || ca.sc.siege > 0);
-						bool stack_wants_offensive_role = stack_already_offensive || (existing_offensive_cores < target_offensive_cores && ca.sc.total >= 6);
 
 						// Purely stat-driven obsolescence check (catches Irregulars, Medieval Peasant Levies, obsolete militia,
 						// while NEVER deleting strong shock/flanking units like Medieval Heavy Knights or early Cuirassiers!)
@@ -5632,7 +5897,7 @@ void update_land_constructions(sys::state& state) {
 								new_type = pick_back;
 							}
 						} else if(cur_is_back) {
-							// Backline unit: only upgrade if a genuinely much stronger backline unit unlocked (never overwrite needed siege/recon!)
+							// Backline unit: upgrade into affordable elite/stronger backline ONLY if within sustainable cap!
 							if(!cur_has_siege && !cur_has_recon && pick_back && pick_back != cur_type && best_back_pwr > cur_back_pwr * 1.25f && can_convert_to(reg.id, pick_back)) {
 								new_type = pick_back;
 							} else if(cur_has_siege && pick_sg && pick_sg != cur_type && can_convert_to(reg.id, pick_sg)) {
@@ -5680,9 +5945,10 @@ void update_land_constructions(sys::state& state) {
 		auto try_build_from_pop = [&](dcon::province_id prov, dcon::pop_id pop_id, bool pc) -> bool {
 			auto cult = state.world.pop_get_culture(pop_id);
 			auto pick_inf = pc && pc_inf_type ? pc_inf_type : inf_type;
-			auto pick_art = pc && pc_art_type ? pc_art_type : art_type;
-			auto pick_rec = pc && pc_recon_type ? pc_recon_type : recon_type;
-			auto pick_sg = pc && pc_siege_type ? pc_siege_type : siege_type;
+			auto pick_elite = pick_affordable_elite_back(pc, true);
+			auto pick_art = pick_elite ? pick_elite : (pc && pc_art_type ? pc_art_type : art_type);
+			auto pick_rec = pick_affordable_from_pair(pc ? pc_recon_pair : recon_pair);
+			auto pick_sg = pick_affordable_from_pair(pc ? pc_siege_pair : siege_pair);
 
 			auto attempt = [&](dcon::unit_type_id uid) -> bool {
 				if(!uid)
