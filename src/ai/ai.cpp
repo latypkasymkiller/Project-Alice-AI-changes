@@ -3145,6 +3145,9 @@ void distribute_guards_peacetime(sys::state& state, dcon::nation_id n) {
 		if(best_j >= 0) {
 			state.world.army_set_ai_province(g.id, provinces[size_t(best_j)].id);
 			pcaps[size_t(best_j)].used_regs += g.regs;
+		} else if(g.black_flag && cap) {
+			// Never abandon a black-flagged army stranded abroad just because home provinces already hold troops!
+			state.world.army_set_ai_province(g.id, cap);
 		}
 	}
 }
@@ -3258,6 +3261,7 @@ void move_idle_guards_impl(sys::state& state, bool only_at_war) {
 		auto dest_prov = state.world.army_get_ai_province(army_i);
 		auto regs = state.world.army_get_army_membership(army_i);
 		int32_t iregs = int32_t(regs.end() - regs.begin());
+		bool const is_bf = state.world.army_get_black_flag(army_i);
 		auto const& gtmap = get_guard_tmap(controller);
 		uint16_t dest_tid = gtmap.theater_of(dest_prov);
 
@@ -3293,15 +3297,24 @@ void move_idle_guards_impl(sys::state& state, bool only_at_war) {
 				auto bpath = state.world.navy_get_path(existing_boarding);
 				dcon::province_id bport = bpath.size() > 0 ? bpath[0] : state.world.navy_get_location_from_navy_location(existing_boarding);
 				if(bport && province::is_sea(state, bport)) {
-					dcon::province_id coast_p;
+					// Fleet is waiting offshore in a sea tile (e.g. evacuating black-flagged armies from neutral France!).
+					// Pick the closest reachable coastal province fronting that sea tile (black-flagged armies do NOT need safe access to neutral French coast!).
+					dcon::province_id best_coast_p;
+					float best_coast_km = 1e9f;
 					for(auto padj : state.world.province_get_province_adjacency(bport)) {
 						auto other = padj.get_connected_provinces(0) == bport ? padj.get_connected_provinces(1).id : padj.get_connected_provinces(0).id;
-						if(other && !province::is_sea(state, other) && state.world.province_get_port_to(other) == bport && province::has_safe_access_to_province(state, controller, other)) {
-							coast_p = other;
-							break;
+						if(other && !province::is_sea(state, other)
+							&& state.world.province_get_port_to(other) == bport
+							&& (is_bf || province::has_safe_access_to_province(state, controller, other))) {
+							float ckm = province::direct_distance_km(state, coastal_target_prov, other);
+							if((other == coastal_target_prov || !province::make_land_unit_path(state, coastal_target_prov, other, controller, army_i).empty())
+								&& (ckm < best_coast_km || (ckm == best_coast_km && best_coast_p && other.index() < best_coast_p.index()))) {
+								best_coast_km = ckm;
+								best_coast_p = other;
+							}
 						}
 					}
-					bport = coast_p;
+					bport = best_coast_p;
 				}
 				if(bport && (coastal_target_prov == bport || military::move_army_ai(state, army_i, bport, controller))) {
 					state.world.army_set_ai_activity(army_i, uint8_t(army_activity::transport_guard));
@@ -3327,14 +3340,41 @@ void move_idle_guards_impl(sys::state& state, bool only_at_war) {
 			state.world.army_set_ai_province(army_i, dcon::province_id{}); // stop rechecking unit
 			continue;
 		}
-		// Only this specific stack is oversized for the transport fleet: skip it without wiping smaller stacks that DO fit!
+		// Oversized stack for our transport fleet:
+		// If black-flagged (e.g. 36K Brazilian army stranded in France after WWI with only 10 transports = 30K lift!),
+		// split off the excess regiments cleanly so Wave 1 evacuates immediately and Wave 2 returns for the rest!
 		if(iregs > raw_tcap) {
-			state.world.army_set_ai_province(army_i, dcon::province_id{});
-			continue;
+			if(is_bf && raw_tcap >= 1) {
+				std::vector<dcon::regiment_id> excess_regs;
+				excess_regs.reserve(size_t(iregs - raw_tcap));
+				int32_t keep_cnt = 0;
+				for(auto rm : state.world.army_get_army_membership(army_i)) {
+					if(keep_cnt < raw_tcap) {
+						++keep_cnt;
+					} else {
+						excess_regs.push_back(rm.get_regiment().id);
+					}
+				}
+				if(!excess_regs.empty() && military::can_split_army<command::actor::ai>(state, controller, army_i, excess_regs)) {
+					military::split_army<command::actor::ai>(state, controller, army_i, excess_regs, 0);
+					dcon::army_id child_army = state.world.regiment_get_army_from_army_membership(excess_regs[0]);
+					if(child_army && child_army != army_i) {
+						state.world.army_set_ai_activity(child_army, uint8_t(army_activity::on_guard));
+						state.world.army_set_ai_province(child_army, dest_prov);
+					}
+					iregs = raw_tcap;
+				} else {
+					state.world.army_set_ai_province(army_i, dcon::province_id{});
+					continue;
+				}
+			} else {
+				state.world.army_set_ai_province(army_i, dcon::province_id{});
+				continue;
+			}
 		}
 		int32_t tcap = raw_tcap - iregs;
 
-		// Prefer a safe dockable coastal port where one of the assigned stacks for this wave is ALREADY standing!
+		// Prefer a coastal embarkation point where one of the assigned stacks for this wave is ALREADY standing!
 		if(!state.world.province_get_is_coast(coastal_target_prov) || !state.world.province_get_port_to(coastal_target_prov)) {
 			dcon::province_id better_coast;
 			for(uint32_t j = i + 1; j < uint32_t(require_transport.size()); ++j) {
@@ -3344,9 +3384,11 @@ void move_idle_guards_impl(sys::state& state, bool only_at_war) {
 					uint16_t j_tid = gtmap.theater_of(j_dest);
 					if(j_dest == dest_prov || (dest_tid != 0 && j_tid == dest_tid)) {
 						auto jloc = state.world.army_get_location_from_army_location(j_army);
+						bool coast_access_ok = is_bf
+							? true
+							: (province::has_naval_access_to_province(state, controller, jloc) && !ai_front_helpers::province_has_enemy_army(state, controller, jloc));
 						if(jloc && state.world.province_get_is_coast(jloc) && state.world.province_get_port_to(jloc)
-							&& province::has_naval_access_to_province(state, controller, jloc)
-							&& !ai_front_helpers::province_has_enemy_army(state, controller, jloc)
+							&& coast_access_ok
 							&& military::move_army_ai(state, army_i, jloc, controller)) {
 							better_coast = jloc;
 							break;
@@ -3357,7 +3399,7 @@ void move_idle_guards_impl(sys::state& state, bool only_at_war) {
 			if(better_coast) {
 				coastal_target_prov = better_coast;
 			} else {
-				auto path = state.world.army_get_black_flag(army_i)
+				auto path = is_bf
 					? province::make_unowned_path_to_nearest_coast(state, coastal_target_prov)
 					: province::make_path_to_nearest_coast(state, controller, coastal_target_prov);
 				bool valid_path = military::set_army_path(state, army_i, path, controller);
@@ -3372,14 +3414,79 @@ void move_idle_guards_impl(sys::state& state, bool only_at_war) {
 
 		{
 			auto fleet_destination = province::has_naval_access_to_province(state, controller, coastal_target_prov) ? coastal_target_prov : state.world.province_get_port_to(coastal_target_prov);
-			if(fleet_destination == state.world.navy_get_location_from_navy_location(transport_fleet)) {
+			bool fleet_routed = false;
+			if(fleet_destination && fleet_destination == state.world.navy_get_location_from_navy_location(transport_fleet)) {
 				military::stop_navy_movement(state, transport_fleet);
 				state.world.navy_set_ai_activity(transport_fleet, uint8_t(fleet_activity::boarding));
-			} else if(auto valid_path = military::move_navy_ai(state, transport_fleet, fleet_destination); !valid_path) {
+				fleet_routed = true;
+			} else if(fleet_destination && military::move_navy_ai(state, transport_fleet, fleet_destination)) {
+				state.world.navy_set_ai_activity(transport_fleet, uint8_t(fleet_activity::boarding));
+				fleet_routed = true;
+			}
+
+			// Fallback for black-flagged armies stranded near an unreachable inland sea (e.g. Caspian Sea or closed strait!):
+			// BFS across passable land to find the nearest coast whose offshore sea tile IS reachable by transport_fleet!
+			if(!fleet_routed && is_bf) {
+				auto start_loc = state.world.army_get_location_from_army_location(army_i);
+				auto fleet_loc = state.world.navy_get_location_from_navy_location(transport_fleet);
+				uint32_t const first_sea = uint32_t(state.province_definitions.first_sea_province.index());
+				int32_t const lcount = int32_t(std::min(state.world.province_size(), first_sea));
+				if(start_loc && start_loc.index() < lcount && fleet_loc) {
+					std::vector<uint8_t> vis(size_t(lcount), 0);
+					std::vector<dcon::province_id> bfs_q;
+					bfs_q.reserve(256);
+					vis[start_loc.index()] = 1;
+					bfs_q.push_back(start_loc);
+					int32_t sea_checks = 0;
+					std::vector<dcon::province_id> tested_seas;
+					dcon::province_id reachable_coast;
+					dcon::province_id reachable_fdest;
+
+					for(size_t qi = 0; qi < bfs_q.size() && !reachable_coast && sea_checks < 24; ++qi) {
+						auto u = bfs_q[qi];
+						if(u != coastal_target_prov && state.world.province_get_is_coast(u)) {
+							auto s_tile = state.world.province_get_port_to(u);
+							if(s_tile && std::find(tested_seas.begin(), tested_seas.end(), s_tile) == tested_seas.end()) {
+								tested_seas.push_back(s_tile);
+								auto fdest = province::has_naval_access_to_province(state, controller, u) ? u : s_tile;
+								++sea_checks;
+								if(fdest == fleet_loc || !province::make_naval_unit_path(state, fleet_loc, fdest, controller).empty()) {
+									reachable_coast = u;
+									reachable_fdest = fdest;
+									break;
+								}
+							}
+						}
+						for(auto padj : state.world.province_get_province_adjacency(u)) {
+							auto bits = state.world.province_adjacency_get_type(padj.id);
+							if((bits & province::border::impassible_bit) != 0)
+								continue;
+							auto v = padj.get_connected_provinces(0) == u ? padj.get_connected_provinces(1).id : padj.get_connected_provinces(0).id;
+							if(v && v.index() < lcount && !vis[v.index()]) {
+								vis[v.index()] = 1;
+								bfs_q.push_back(v);
+							}
+						}
+					}
+
+					if(reachable_coast && reachable_fdest
+						&& (start_loc == reachable_coast || military::move_army_ai(state, army_i, reachable_coast, controller))) {
+						coastal_target_prov = reachable_coast;
+						if(reachable_fdest == fleet_loc) {
+							military::stop_navy_movement(state, transport_fleet);
+							state.world.navy_set_ai_activity(transport_fleet, uint8_t(fleet_activity::boarding));
+							fleet_routed = true;
+						} else if(military::move_navy_ai(state, transport_fleet, reachable_fdest)) {
+							state.world.navy_set_ai_activity(transport_fleet, uint8_t(fleet_activity::boarding));
+							fleet_routed = true;
+						}
+					}
+				}
+			}
+
+			if(!fleet_routed) {
 				state.world.army_set_ai_province(army_i, dcon::province_id{});
 				continue;
-			} else {
-				state.world.navy_set_ai_activity(transport_fleet, uint8_t(fleet_activity::boarding));
 			}
 		}
 
@@ -3476,18 +3583,22 @@ void update_naval_transport(sys::state& state) {
 					ar.set_ai_province(dcon::province_id{});
 				}
 			} else if(transport_location && province::is_sea(state, transport_location)) {
-				// Fleet is waiting offshore: walk to any reachable coastal province fronting that sea tile!
-				bool routed = false;
+				// Fleet is waiting offshore (e.g. evacuating black-flagged armies from a neutral coast!):
+				// walk to the CLOSEST reachable coastal province fronting that sea tile (then next tick step directly into the sea tile to embark!)
+				dcon::province_id best_coast;
+				float best_coast_km = 1e9f;
 				for(auto padj : state.world.province_get_province_adjacency(transport_location)) {
 					auto other = padj.get_connected_provinces(0) == transport_location ? padj.get_connected_provinces(1).id : padj.get_connected_provinces(0).id;
 					if(other && !province::is_sea(state, other) && state.world.province_get_port_to(other) == transport_location) {
-						if(military::move_army_ai(state, ar, other, controller)) {
-							routed = true;
-							break;
+						float ckm = province::direct_distance_km(state, army_location, other);
+						if(!province::make_land_unit_path(state, army_location, other, controller, ar).empty()
+							&& (ckm < best_coast_km || (ckm == best_coast_km && best_coast && other.index() < best_coast.index()))) {
+							best_coast_km = ckm;
+							best_coast = other;
 						}
 					}
 				}
-				if(!routed) {
+				if(!best_coast || !military::move_army_ai(state, ar, best_coast, controller)) {
 					ar.set_ai_activity(uint8_t(army_activity::on_guard));
 					ar.set_ai_province(dcon::province_id{});
 				}
