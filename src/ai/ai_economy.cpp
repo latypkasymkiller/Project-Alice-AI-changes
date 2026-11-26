@@ -836,16 +836,23 @@ void update_budget_for_nation(sys::state& state, dcon::nation_id nid, bool presi
 	// and calculation of actual prediction is insanely expensive
 	float base_income = n.get_treasury();
 
-	// Compute average army strength so post-war AI keeps reinforcing until regiments are recovered
+	// Compute average army strength & count understrength regiments (including newly converted/re-equipping regiments!)
+	// Note: full-strength regiments consume 0 reinforcement goods, so keeping reinforcement consumption high while any
+	// regiment is re-equipping costs almost nothing and prevents converted units from crawling at 20% speed!
 	float total_reg_str = 0.0f;
 	int32_t total_regs = 0;
+	int32_t understrength_regs = 0;
 	for(auto ar : state.world.nation_get_army_control(nid)) {
 		for(auto r : ar.get_army().get_army_membership()) {
-			total_reg_str += r.get_regiment().get_strength();
+			float rstr = r.get_regiment().get_strength();
+			total_reg_str += rstr;
 			++total_regs;
+			if(rstr < 0.90f) {
+				++understrength_regs;
+			}
 		}
 	}
-	bool needs_postwar_reinforce = (total_regs > 0) && (total_reg_str / float(total_regs) < 0.95f);
+	bool needs_postwar_reinforce = (total_regs > 0) && ((total_reg_str / float(total_regs) < 0.95f) || understrength_regs > 0);
 
 	bool has_navy = (n.get_navy_control().begin() != n.get_navy_control().end());
 	auto mode = presim ? war_economy_mode::peacetime : evaluate_war_economy_mode(state, nid);
@@ -853,7 +860,7 @@ void update_budget_for_nation(sys::state& state, dcon::nation_id nid, bool presi
 	float land_budget_ratio = 0.12f;
 	float sea_budget_ratio = has_navy ? 0.05f : 0.0f;
 	float land_supply_consumption = 0.15f;
-	float land_reinf_consumption = needs_postwar_reinforce ? 0.80f : 0.20f;
+	float land_reinf_consumption = needs_postwar_reinforce ? 0.85f : 0.20f;
 	float naval_supply_consumption = has_navy ? 0.15f : 0.0f;
 	float naval_reinf_consumption = has_navy ? 0.20f : 0.0f;
 
