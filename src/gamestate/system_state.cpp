@@ -4437,14 +4437,19 @@ void state::on_scenario_load() {
 	fif::perform_jit(*jit_environment);
 
 	//
-	// set global values BEFORE publishing any JIT function pointers, and synchronize with save/load resets
+	// set global values BEFORE publishing any JIT function pointers.
+	// Note: the first LLVMOrcLLJITLookup triggers full module compilation (~10-15s),
+	// so keep it outside game_state_resetting_lock to avoid stalling save loading or game start.
+	// &world, shared_backing_storage.allocation, and this have fixed addresses for the process lifetime,
+	// and no JIT function is callable until its pointer is published below.
 	//
-	std::shared_lock<std::shared_mutex> jit_publish_lock{ game_state_resetting_lock };
+	bool jit_globals_initialized = true;
 	{
 		LLVMOrcExecutorAddress bare_address = 0;
 		auto error = LLVMOrcLLJITLookup(jit_environment->llvm_jit, &bare_address, "set_container");
 
 		if(error) {
+			jit_globals_initialized = false;
 			auto msg = LLVMGetErrorMessage(error);
 #ifdef _WIN32
 			OutputDebugStringA(msg);
@@ -4463,6 +4468,7 @@ void state::on_scenario_load() {
 		auto error = LLVMOrcLLJITLookup(jit_environment->llvm_jit, &bare_address, "set_vector_storage");
 
 		if(error) {
+			jit_globals_initialized = false;
 			auto msg = LLVMGetErrorMessage(error);
 #ifdef _WIN32
 			OutputDebugStringA(msg);
@@ -4481,6 +4487,7 @@ void state::on_scenario_load() {
 		auto error = LLVMOrcLLJITLookup(jit_environment->llvm_jit, &bare_address, "set_state");
 
 		if(error) {
+			jit_globals_initialized = false;
 			auto msg = LLVMGetErrorMessage(error);
 #ifdef _WIN32
 			OutputDebugStringA(msg);
@@ -4494,14 +4501,18 @@ void state::on_scenario_load() {
 			fn(this);
 		}
 	}
+	if(!jit_globals_initialized) {
+		return;
+	}
 	std::atomic_thread_fence(std::memory_order_release);
 	//
 	// END set global values
 	//
 
 	//
-	// load exported fns
+	// load exported fns (module is already compiled, so this loop is fast and safe under shared_lock)
 	//
+	std::shared_lock<std::shared_mutex> jit_publish_lock{ game_state_resetting_lock };
 	for(auto p : world.in_pop_type) {
 		for(auto i : world.in_issue_option) {
 			std::string name = "pi" + std::to_string(p.id.index()) + "_" + std::to_string(i.id.index()) + "ext";
