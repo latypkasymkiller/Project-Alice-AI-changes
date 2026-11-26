@@ -885,7 +885,7 @@ void advance_transport_navy_state(sys::state& state, dcon::navy_fat_id n, dcon::
 				if(transported_dest.get_is_coast()) { // move to closest friendly port or offshore landing tile
 					auto target_prov = transported_dest.id;
 					if(!province::has_naval_access_to_province(state, owner, target_prov)) {
-						target_prov = state.world.province_get_port_to(target_prov);
+						target_prov = state.world.province_get_port_to(target_prov).id;
 					}
 					if(target_prov == location) {
 						unload_units_from_transport(state, n.id);
@@ -900,7 +900,7 @@ void advance_transport_navy_state(sys::state& state, dcon::navy_fat_id n, dcon::
 				} else {
 					auto target_prov = path.front();
 					if(!province::has_naval_access_to_province(state, owner, target_prov)) {
-						target_prov = state.world.province_get_port_to(target_prov);
+						target_prov = state.world.province_get_port_to(target_prov).id;
 					}
 					if(target_prov == location) {
 						unload_units_from_transport(state, n.id);
@@ -1470,7 +1470,7 @@ struct walkable_theater_map {
 				seeds.push_back(loc);
 			}
 		}
-		if(auto cap = state.world.nation_get_capital(n); cap && cap.index() < land_count) {
+		if(dcon::province_id cap = state.world.nation_get_capital(n).id; cap && cap.index() < land_count) {
 			seeds.push_back(cap);
 		}
 		if(extra_seed && extra_seed.index() < land_count) {
@@ -1670,7 +1670,7 @@ inline float estimate_naval_landing_threat(sys::state& state, dcon::nation_id n,
 
 	// If landing directly onto an enemy's homeland capital landmass, also account for unengaged homeland armies beyond 800 km (capped)
 	if(def_nat && military::are_at_war(state, n, def_nat)) {
-		auto def_cap = state.world.nation_get_capital(def_nat);
+		dcon::province_id def_cap = state.world.nation_get_capital(def_nat).id;
 		if(def_cap && state.world.province_get_connected_region_id(def_cap) == state.world.province_get_connected_region_id(target_p)) {
 			uint16_t cap_crid = state.world.province_get_connected_region_id(def_cap);
 			float far_homeland_regs = 0.0f;
@@ -3298,7 +3298,7 @@ void move_idle_guards_impl(sys::state& state, bool only_at_war) {
 		auto army_i = require_transport[i];
 		auto coastal_target_prov = state.world.army_get_location_from_army_location(army_i);
 		auto controller = state.world.army_get_controller_from_army_control(army_i);
-		auto dest_prov = state.world.army_get_ai_province(army_i);
+		dcon::province_id dest_prov = state.world.army_get_ai_province(army_i).id;
 		auto regs = state.world.army_get_army_membership(army_i);
 		int32_t iregs = int32_t(regs.end() - regs.begin());
 		bool const is_bf = state.world.army_get_black_flag(army_i);
@@ -3420,7 +3420,7 @@ void move_idle_guards_impl(sys::state& state, bool only_at_war) {
 			for(uint32_t j = i + 1; j < uint32_t(require_transport.size()); ++j) {
 				auto j_army = require_transport[j];
 				if(state.world.army_get_controller_from_army_control(j_army) == controller) {
-					auto j_dest = state.world.army_get_ai_province(j_army);
+					dcon::province_id j_dest = state.world.army_get_ai_province(j_army).id;
 					uint16_t j_tid = gtmap.theater_of(j_dest);
 					if(j_dest == dest_prov || (dest_tid != 0 && j_tid == dest_tid)) {
 						auto jloc = state.world.army_get_location_from_army_location(j_army);
@@ -3453,7 +3453,7 @@ void move_idle_guards_impl(sys::state& state, bool only_at_war) {
 		}
 
 		{
-			auto fleet_destination = province::has_naval_access_to_province(state, controller, coastal_target_prov) ? coastal_target_prov : state.world.province_get_port_to(coastal_target_prov);
+			dcon::province_id fleet_destination = province::has_naval_access_to_province(state, controller, coastal_target_prov) ? coastal_target_prov : state.world.province_get_port_to(coastal_target_prov).id;
 			bool fleet_routed = false;
 			if(fleet_destination && fleet_destination == state.world.navy_get_location_from_navy_location(transport_fleet)) {
 				military::stop_navy_movement(state, transport_fleet);
@@ -3485,10 +3485,10 @@ void move_idle_guards_impl(sys::state& state, bool only_at_war) {
 					for(size_t qi = 0; qi < bfs_q.size() && !reachable_coast && sea_checks < 24; ++qi) {
 						auto u = bfs_q[qi];
 						if(u != coastal_target_prov && state.world.province_get_is_coast(u)) {
-							auto s_tile = state.world.province_get_port_to(u);
+							dcon::province_id s_tile = state.world.province_get_port_to(u).id;
 							if(s_tile && std::find(tested_seas.begin(), tested_seas.end(), s_tile) == tested_seas.end()) {
 								tested_seas.push_back(s_tile);
-								auto fdest = province::has_naval_access_to_province(state, controller, u) ? u : s_tile;
+								dcon::province_id fdest = province::has_naval_access_to_province(state, controller, u) ? u : s_tile;
 								++sea_checks;
 								if(fdest == fleet_loc || !province::make_naval_unit_path(state, fleet_loc, fdest, controller).empty()) {
 									reachable_coast = u;
@@ -3538,7 +3538,7 @@ void move_idle_guards_impl(sys::state& state, bool only_at_war) {
 		for(uint32_t j = uint32_t(require_transport.size()); j-- > i + 1;) {
 			auto j_army = require_transport[j];
 			if(state.world.army_get_controller_from_army_control(j_army) == controller) {
-				auto j_dest = state.world.army_get_ai_province(j_army);
+				dcon::province_id j_dest = state.world.army_get_ai_province(j_army).id;
 				uint16_t j_tid = gtmap.theater_of(j_dest);
 				bool same_dest_landmass = (j_dest == dest_prov)
 					|| (dest_tid != 0 && j_tid == dest_tid)
@@ -5615,7 +5615,7 @@ void move_gathered_attackers_impl(sys::state& state, bool only_at_war) {
 		auto army_i = require_transport[i];
 		auto coastal_target_prov = state.world.army_get_location_from_army_location(army_i);
 		auto controller = state.world.army_get_controller_from_army_control(army_i);
-		auto dest_prov = state.world.army_get_ai_province(army_i);
+		dcon::province_id dest_prov = state.world.army_get_ai_province(army_i).id;
 		auto regs = state.world.army_get_army_membership(army_i);
 		int32_t iregs = int32_t(regs.end() - regs.begin());
 
@@ -5724,7 +5724,7 @@ void move_gathered_attackers_impl(sys::state& state, bool only_at_war) {
 		}
 
 		{
-			auto fleet_destination = province::has_naval_access_to_province(state, controller, coastal_target_prov) ? coastal_target_prov : state.world.province_get_port_to(coastal_target_prov);
+			dcon::province_id fleet_destination = province::has_naval_access_to_province(state, controller, coastal_target_prov) ? coastal_target_prov : state.world.province_get_port_to(coastal_target_prov).id;
 			if(fleet_destination == state.world.navy_get_location_from_navy_location(transport_fleet)) {
 				military::stop_navy_movement(state, transport_fleet);
 				state.world.navy_set_ai_activity(transport_fleet, uint8_t(fleet_activity::boarding));
@@ -5745,7 +5745,7 @@ void move_gathered_attackers_impl(sys::state& state, bool only_at_war) {
 		for(uint32_t j = uint32_t(require_transport.size()); j-- > i + 1;) {
 			if(state.world.army_get_controller_from_army_control(require_transport[j]) == controller) {
 				auto j_army = require_transport[j];
-				auto j_dest = state.world.army_get_ai_province(j_army);
+				dcon::province_id j_dest = state.world.army_get_ai_province(j_army).id;
 				bool same_dest = (j_dest == dest_prov) || (state.world.province_get_connected_region_id(j_dest) == destination_region);
 				auto jregs = state.world.army_get_army_membership(j_army);
 				int32_t jcount = int32_t(jregs.end() - jregs.begin());
@@ -5833,7 +5833,7 @@ inline bool unit_type_has_build_shortage(sys::state& state, dcon::nation_id n, d
 	bool has_any_market = (states_ctrl.begin() != states_ctrl.end());
 	dcon::market_id fallback_market;
 	if(!has_any_market) {
-		auto cap = state.world.nation_get_capital(n);
+		dcon::province_id cap = state.world.nation_get_capital(n).id;
 		if(!cap) {
 			return false;
 		}
@@ -5978,7 +5978,7 @@ inline int32_t estimate_sustainable_regiment_cap(
 	bool has_any_market = (states_ctrl.begin() != states_ctrl.end());
 	dcon::market_id fallback_market;
 	if(!has_any_market) {
-		auto cap = state.world.nation_get_capital(n);
+		dcon::province_id cap = state.world.nation_get_capital(n).id;
 		if(cap) {
 			fallback_market = state.world.state_instance_get_market_from_local_market(state.world.province_get_state_membership(cap));
 		}
@@ -7486,7 +7486,7 @@ void update_unit_supply_priorities_for_nation(sys::state& state, dcon::nation_id
 
 		auto act = army_activity(ar.get_ai_activity());
 		auto loc = ar.get_location_from_army_location().id;
-		auto ai_p = ar.get_ai_province();
+		dcon::province_id ai_p = ar.get_ai_province().id;
 		auto path = ar.get_path();
 		dcon::province_id move_dest = (path.size() > 0) ? path.at(0) : dcon::province_id{};
 		bool attacking_order = (act == army_activity::attacking
