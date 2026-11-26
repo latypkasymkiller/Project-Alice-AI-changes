@@ -3341,9 +3341,9 @@ void add_wargoal(sys::state& state, dcon::war_id wfor, dcon::nation_id added_by,
 	}
 }
 
-void remove_from_war(sys::state& state, dcon::war_id w, dcon::nation_id n, bool as_loss) {
+void remove_from_war(sys::state& state, dcon::war_id w, dcon::nation_id n, bool as_loss, bool notify_ai) {
 	for(auto vas : state.world.nation_get_overlord_as_ruler(n)) {
-		remove_from_war(state, w, vas.get_subject(), as_loss);
+		remove_from_war(state, w, vas.get_subject(), as_loss, notify_ai);
 	}
 
 	dcon::war_participant_id par;
@@ -3464,7 +3464,7 @@ void remove_from_war(sys::state& state, dcon::war_id w, dcon::nation_id n, bool 
 	if(as_loss) {
 		state.world.nation_set_last_war_loss(n, state.current_date);
 	}
-	if(!state.cheat_data.disable_ai) {
+	if(notify_ai && !state.cheat_data.disable_ai) {
 		ai::on_war_state_changed(state, n);
 		for(auto war_par : state.world.war_get_war_participant(w)) {
 			ai::on_war_state_changed(state, war_par.get_nation());
@@ -3480,11 +3480,16 @@ void cleanup_war(sys::state& state, dcon::war_id w, war_result result) {
 		nations::cleanup_crisis(state);
 	}
 
+	std::vector<dcon::nation_id> former_participants;
+	for(auto wp : par) {
+		former_participants.push_back(wp.get_nation().id);
+	}
+
 	while(par.begin() != par.end()) {
 		if((*par.begin()).get_is_attacker()) {
-			remove_from_war(state, w, (*par.begin()).get_nation(), result == war_result::defender_won);
+			remove_from_war(state, w, (*par.begin()).get_nation(), result == war_result::defender_won, false);
 		} else {
-			remove_from_war(state, w, (*par.begin()).get_nation(), result == war_result::attacker_won);
+			remove_from_war(state, w, (*par.begin()).get_nation(), result == war_result::attacker_won, false);
 		}
 	}
 
@@ -3498,6 +3503,12 @@ void cleanup_war(sys::state& state, dcon::war_id w, war_result result) {
 		end_battle(state, (*lbattles.begin()).get_battle().id, battle_result::indecisive);
 	}
 	state.world.delete_war(w);
+
+	if(!state.cheat_data.disable_ai) {
+		for(auto nid : former_participants) {
+			ai::on_war_state_changed(state, nid);
+		}
+	}
 }
 
 void set_initial_leaders(sys::state& state) {

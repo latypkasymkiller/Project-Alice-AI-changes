@@ -371,7 +371,7 @@ bool cb_requires_selection_of_a_valid_nation(sys::state const& state, dcon::cb_t
 bool cb_requires_selection_of_a_liberatable_tag(sys::state const& state, dcon::cb_type_id t);
 bool cb_requires_selection_of_a_state(sys::state const& state, dcon::cb_type_id t);
 
-void remove_from_war(sys::state& state, dcon::war_id w, dcon::nation_id n, bool as_loss);
+void remove_from_war(sys::state& state, dcon::war_id w, dcon::nation_id n, bool as_loss, bool notify_ai = true);
 enum class war_result {
 	draw, attacker_won, defender_won
 };

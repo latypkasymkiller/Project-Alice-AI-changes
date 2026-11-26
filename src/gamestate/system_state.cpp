@@ -4353,85 +4353,151 @@ void state::on_scenario_load() {
 	jit_environment->report_error = [&](std::string_view s) {
 		console_command_error += std::string("?R ERROR: ") + std::string(s) + "?W\\n";
 		};
-	fif::common_fif_environment(*this, *jit_environment);
-
-
-	fif::interpreter_stack values{ };
-
-	//AllocConsole();
-	//freopen("CONOUT$", "w", stdout);
-	//freopen("CONOUT$", "w", stderr);
-
-	for(auto p : world.in_pop_type) {
-		for(auto i : world.in_issue_option) {
-			auto mkey = world.pop_type_get_issues(p, i);
-			std::string base_name = "pi" + std::to_string(p.id.index()) + "_" + std::to_string(i.id.index());
-			if(mkey) {
-				std::string fn_str = ": " + base_name + "internal >pop_id dup " + fif_trigger::multiplicative_modifier(*this, mkey) + " drop drop r> ; ";
-				fn_str += ":export " + base_name + "ext" + " i32 " + base_name + "internal ; ";
-				fif::run_fif_interpreter(*jit_environment, fn_str, values);
-			} else {
-				std::string fn_str = ": " + base_name + "internal" + " drop 0.0 ; ";
-				fn_str += ":export " + base_name + "ext" + " i32 " + base_name + "internal ; ";
-				fif::run_fif_interpreter(*jit_environment, fn_str, values);
-			}
-		}
-
-		for(auto id : world.in_ideology) {
-			auto mkey = world.pop_type_get_ideology(p, id);
-			std::string base_name = "pid" + std::to_string(p.id.index()) + "_" + std::to_string(id.id.index());
-			if(mkey) {
-				std::string fn_str = ": " + base_name + "internal >pop_id dup " + fif_trigger::multiplicative_modifier(*this, mkey) + " drop drop r> ; ";
-				fn_str += ":export " + base_name + "ext" + " i32 " + base_name + "internal ; ";
-				fif::run_fif_interpreter(*jit_environment, fn_str, values);
-			} else {
-				std::string fn_str = ": " + base_name + "internal" + " drop 0.0 ; ";
-				fn_str += ":export " + base_name + "ext" + " i32 " + base_name + "internal ; ";
-				fif::run_fif_interpreter(*jit_environment, fn_str, values);
-			}
-		}
-
-		for(auto t : world.in_pop_type) {
-			auto mkey = world.pop_type_get_promotion(p, t);
-			std::string base_name = "pp" + std::to_string(p.id.index()) + "_" + std::to_string(t.id.index());
-			if(mkey) {
-				std::string fn_str = ": " + base_name + "internal >pop_id dup " + fif_trigger::additive_modifier(*this, mkey) + " drop drop r> ; ";
-				fn_str += ":export " + base_name + "ext" + " i32 " + base_name + "internal ; ";
-				fif::run_fif_interpreter(*jit_environment, fn_str, values);
-			}
-		}
-
-		{
-			auto mkey = world.pop_type_get_migration_target(p);
-			std::string base_name = "pmt" + std::to_string(p.id.index());
-			if(mkey) {
-				std::string fn_str = ": " + base_name + "internal swap >pop_id swap >province_id " + fif_trigger::multiplicative_modifier(*this, mkey) + " drop drop r> ; ";
-				fn_str += ":export " + base_name + "ext" + " i32 i32 " + base_name + "internal ; ";
-				fif::run_fif_interpreter(*jit_environment, fn_str, values);
-			}
-		}
-		{
-			auto mkey = world.pop_type_get_country_migration_target(p);
-			std::string base_name = "pcmt" + std::to_string(p.id.index());
-			if(mkey) {
-				std::string fn_str = ": " + base_name + "internal swap >pop_id swap >nation_id " + fif_trigger::multiplicative_modifier(*this, mkey) + " drop drop r> ; ";
-				fn_str += ":export " + base_name + "ext" + " i32 i32 " + base_name + "internal ; ";
-				fif::run_fif_interpreter(*jit_environment, fn_str, values);
-			}
-		}
-	}
 	{
-		std::string fn_str = ": promote_internal >pop_id dup " + fif_trigger::additive_modifier(*this, culture_definitions.promotion_chance) + " drop drop r> ; ";
-		fn_str += ":export promote_ext i32 promote_internal ; ";
-		fif::run_fif_interpreter(*jit_environment, fn_str, values);
-	}
-	{
-		std::string fn_str = ": demote_internal >pop_id dup " + fif_trigger::additive_modifier(*this, culture_definitions.demotion_chance) + " drop drop r> ; ";
-		fn_str += ":export demote_ext i32 demote_internal ; ";
-		fif::run_fif_interpreter(*jit_environment, fn_str, values);
+		std::shared_lock<std::shared_mutex> jit_read_lock{ game_state_resetting_lock };
+		fif::common_fif_environment(*this, *jit_environment);
+
+
+		fif::interpreter_stack values{ };
+
+		//AllocConsole();
+		//freopen("CONOUT$", "w", stdout);
+		//freopen("CONOUT$", "w", stderr);
+
+		for(auto p : world.in_pop_type) {
+			for(auto i : world.in_issue_option) {
+				auto mkey = world.pop_type_get_issues(p, i);
+				std::string base_name = "pi" + std::to_string(p.id.index()) + "_" + std::to_string(i.id.index());
+				if(mkey) {
+					std::string fn_str = ": " + base_name + "internal >pop_id dup " + fif_trigger::multiplicative_modifier(*this, mkey) + " drop drop r> ; ";
+					fn_str += ":export " + base_name + "ext" + " i32 " + base_name + "internal ; ";
+					fif::run_fif_interpreter(*jit_environment, fn_str, values);
+				} else {
+					std::string fn_str = ": " + base_name + "internal" + " drop 0.0 ; ";
+					fn_str += ":export " + base_name + "ext" + " i32 " + base_name + "internal ; ";
+					fif::run_fif_interpreter(*jit_environment, fn_str, values);
+				}
+			}
+
+			for(auto id : world.in_ideology) {
+				auto mkey = world.pop_type_get_ideology(p, id);
+				std::string base_name = "pid" + std::to_string(p.id.index()) + "_" + std::to_string(id.id.index());
+				if(mkey) {
+					std::string fn_str = ": " + base_name + "internal >pop_id dup " + fif_trigger::multiplicative_modifier(*this, mkey) + " drop drop r> ; ";
+					fn_str += ":export " + base_name + "ext" + " i32 " + base_name + "internal ; ";
+					fif::run_fif_interpreter(*jit_environment, fn_str, values);
+				} else {
+					std::string fn_str = ": " + base_name + "internal" + " drop 0.0 ; ";
+					fn_str += ":export " + base_name + "ext" + " i32 " + base_name + "internal ; ";
+					fif::run_fif_interpreter(*jit_environment, fn_str, values);
+				}
+			}
+
+			for(auto t : world.in_pop_type) {
+				auto mkey = world.pop_type_get_promotion(p, t);
+				std::string base_name = "pp" + std::to_string(p.id.index()) + "_" + std::to_string(t.id.index());
+				if(mkey) {
+					std::string fn_str = ": " + base_name + "internal >pop_id dup " + fif_trigger::additive_modifier(*this, mkey) + " drop drop r> ; ";
+					fn_str += ":export " + base_name + "ext" + " i32 " + base_name + "internal ; ";
+					fif::run_fif_interpreter(*jit_environment, fn_str, values);
+				}
+			}
+
+			{
+				auto mkey = world.pop_type_get_migration_target(p);
+				std::string base_name = "pmt" + std::to_string(p.id.index());
+				if(mkey) {
+					std::string fn_str = ": " + base_name + "internal swap >pop_id swap >province_id " + fif_trigger::multiplicative_modifier(*this, mkey) + " drop drop r> ; ";
+					fn_str += ":export " + base_name + "ext" + " i32 i32 " + base_name + "internal ; ";
+					fif::run_fif_interpreter(*jit_environment, fn_str, values);
+				}
+			}
+			{
+				auto mkey = world.pop_type_get_country_migration_target(p);
+				std::string base_name = "pcmt" + std::to_string(p.id.index());
+				if(mkey) {
+					std::string fn_str = ": " + base_name + "internal swap >pop_id swap >nation_id " + fif_trigger::multiplicative_modifier(*this, mkey) + " drop drop r> ; ";
+					fn_str += ":export " + base_name + "ext" + " i32 i32 " + base_name + "internal ; ";
+					fif::run_fif_interpreter(*jit_environment, fn_str, values);
+				}
+			}
+		}
+		{
+			std::string fn_str = ": promote_internal >pop_id dup " + fif_trigger::additive_modifier(*this, culture_definitions.promotion_chance) + " drop drop r> ; ";
+			fn_str += ":export promote_ext i32 promote_internal ; ";
+			fif::run_fif_interpreter(*jit_environment, fn_str, values);
+		}
+		{
+			std::string fn_str = ": demote_internal >pop_id dup " + fif_trigger::additive_modifier(*this, culture_definitions.demotion_chance) + " drop drop r> ; ";
+			fn_str += ":export demote_ext i32 demote_internal ; ";
+			fif::run_fif_interpreter(*jit_environment, fn_str, values);
+		}
 	}
 
 	fif::perform_jit(*jit_environment);
+
+	//
+	// set global values BEFORE publishing any JIT function pointers, and synchronize with save/load resets
+	//
+	std::shared_lock<std::shared_mutex> jit_publish_lock{ game_state_resetting_lock };
+	{
+		LLVMOrcExecutorAddress bare_address = 0;
+		auto error = LLVMOrcLLJITLookup(jit_environment->llvm_jit, &bare_address, "set_container");
+
+		if(error) {
+			auto msg = LLVMGetErrorMessage(error);
+#ifdef _WIN32
+			OutputDebugStringA(msg);
+			OutputDebugStringA("\n");
+#endif
+			LLVMDisposeErrorMessage(msg);
+		} else {
+			assert(bare_address != 0);
+			using ftype = void(*)(void*);
+			ftype fn = (ftype)bare_address;
+			fn(&world);
+		}
+	}
+	{
+		LLVMOrcExecutorAddress bare_address = 0;
+		auto error = LLVMOrcLLJITLookup(jit_environment->llvm_jit, &bare_address, "set_vector_storage");
+
+		if(error) {
+			auto msg = LLVMGetErrorMessage(error);
+#ifdef _WIN32
+			OutputDebugStringA(msg);
+			OutputDebugStringA("\n");
+#endif
+			LLVMDisposeErrorMessage(msg);
+		} else {
+			assert(bare_address != 0);
+			using ftype = void(*)(void*);
+			ftype fn = (ftype)bare_address;
+			fn(dcon::shared_backing_storage.allocation);
+		}
+	}
+	{
+		LLVMOrcExecutorAddress bare_address = 0;
+		auto error = LLVMOrcLLJITLookup(jit_environment->llvm_jit, &bare_address, "set_state");
+
+		if(error) {
+			auto msg = LLVMGetErrorMessage(error);
+#ifdef _WIN32
+			OutputDebugStringA(msg);
+			OutputDebugStringA("\n");
+#endif
+			LLVMDisposeErrorMessage(msg);
+		} else {
+			assert(bare_address != 0);
+			using ftype = void(*)(void*);
+			ftype fn = (ftype)bare_address;
+			fn(this);
+		}
+	}
+	std::atomic_thread_fence(std::memory_order_release);
+	//
+	// END set global values
+	//
 
 	//
 	// load exported fns
@@ -4568,67 +4634,6 @@ void state::on_scenario_load() {
 			culture_definitions.demotion_chance_fn = bare_address;
 		}
 	}
-
-	//
-	// set global values
-	//
-	{
-		LLVMOrcExecutorAddress bare_address = 0;
-		auto error = LLVMOrcLLJITLookup(jit_environment->llvm_jit, &bare_address, "set_container");
-
-		if(error) {
-			auto msg = LLVMGetErrorMessage(error);
-#ifdef _WIN32
-			OutputDebugStringA(msg);
-			OutputDebugStringA("\n");
-#endif
-			LLVMDisposeErrorMessage(msg);
-		} else {
-			assert(bare_address != 0);
-			using ftype = void(*)(void*);
-			ftype fn = (ftype)bare_address;
-			fn(&world);
-		}
-	}
-	{
-		LLVMOrcExecutorAddress bare_address = 0;
-		auto error = LLVMOrcLLJITLookup(jit_environment->llvm_jit, &bare_address, "set_vector_storage");
-
-		if(error) {
-			auto msg = LLVMGetErrorMessage(error);
-#ifdef _WIN32
-			OutputDebugStringA(msg);
-			OutputDebugStringA("\n");
-#endif
-			LLVMDisposeErrorMessage(msg);
-		} else {
-			assert(bare_address != 0);
-			using ftype = void(*)(void*);
-			ftype fn = (ftype)bare_address;
-			fn(dcon::shared_backing_storage.allocation);
-		}
-	}
-	{
-		LLVMOrcExecutorAddress bare_address = 0;
-		auto error = LLVMOrcLLJITLookup(jit_environment->llvm_jit, &bare_address, "set_state");
-
-		if(error) {
-			auto msg = LLVMGetErrorMessage(error);
-#ifdef _WIN32
-			OutputDebugStringA(msg);
-			OutputDebugStringA("\n");
-#endif
-			LLVMDisposeErrorMessage(msg);
-		} else {
-			assert(bare_address != 0);
-			using ftype = void(*)(void*);
-			ftype fn = (ftype)bare_address;
-			fn(this);
-		}
-	}
-	//
-	// END set global values
-	//
 	} };
 
 	dispatch.detach();
@@ -4871,10 +4876,8 @@ void state::fill_unsaved_data() { // reconstructs derived values that are not di
 
 	ai::identify_focuses(*this);
 	ai::initialize_ai_tech_weights(*this);
-	ai::update_ai_general_status(*this);
+	ai::update_ai_general_status(*this, false);
 	ai::refresh_home_ports(*this);
-	ai::update_unit_supply_priorities(*this);
-	ai::manage_ai_leaders(*this);
 
 #ifndef NDEBUG
 	/*for(auto p : world.in_pop) {

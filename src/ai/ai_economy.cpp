@@ -783,6 +783,8 @@ void update_stockpile_targets_for_nation(sys::state& state, dcon::nation_id nid)
 		for(auto r : a.get_army().get_army_membership()) {
 			auto reg = r.get_regiment();
 			auto type = reg.get_type();
+			if(!type)
+				continue;
 			military::accumulate_subunit_daily_goods_requirements<military::unit_consumption_type::supply>(state, nid, reg.id, accumulate_func);
 			const auto& build_cost = state.military_definitions.unit_base_definitions[type].build_cost;
 			for(uint32_t i = 0; i < economy::commodity_set::set_size; ++i) {
@@ -797,8 +799,11 @@ void update_stockpile_targets_for_nation(sys::state& state, dcon::nation_id nid)
 	for(auto a : state.world.nation_get_navy_control(nid)) {
 		for(auto s : a.get_navy().get_navy_membership()) {
 			auto shp = s.get_ship();
+			auto stype = shp.get_type();
+			if(!stype)
+				continue;
 			military::accumulate_subunit_daily_goods_requirements<military::unit_consumption_type::supply>(state, nid, shp.id, accumulate_func);
-			const auto& build_cost = state.military_definitions.unit_base_definitions[shp.get_type()].build_cost;
+			const auto& build_cost = state.military_definitions.unit_base_definitions[stype].build_cost;
 			for(uint32_t i = 0; i < economy::commodity_set::set_size; ++i) {
 				if(build_cost.commodity_type[i]) {
 					accumulate_func(build_cost.commodity_type[i], build_cost.commodity_amounts[i] * (expected_wartime_daily_reinf_rate * 0.4f));
@@ -993,7 +998,7 @@ void update_budget_for_nation(sys::state& state, dcon::nation_id nid, bool presi
 		int max_rich_tax = int(10.f + 50.f * (1.f - rich_militancy));
 
 		// if we are not able to control capital, our taxes are not enough
-		bool enough_tax = n.get_capital().get_control_ratio() > 0.95f;
+		bool enough_tax = n.get_capital() && n.get_capital().get_control_ratio() > 0.95f;
 
 		if(n.get_spending_level() < 1.0f || n.get_last_treasury() >= n.get_treasury() || !enough_tax) { // losing money
 			if(!military_priority_active) {
@@ -1025,7 +1030,7 @@ void update_budget_for_nation(sys::state& state, dcon::nation_id nid, bool presi
 		int max_social = int(20.f * poor_militancy);
 
 		// enough tax?
-		bool enough_tax = n.get_capital().get_control_ratio() > 0.95f;
+		bool enough_tax = n.get_capital() && n.get_capital().get_control_ratio() > 0.95f;
 
 		// Laissez faire prioritize tax free capitalists
 		if(n.get_spending_level() < 1.0f || n.get_last_treasury() >= n.get_treasury() || !enough_tax) { // losing money

@@ -49,11 +49,13 @@ void update_ai_campaign_strategy(sys::state& state) {
 }
 
 /* Update AI threats and rivals */
-void update_ai_general_status(sys::state& state) {
+void update_ai_general_status(sys::state& state, bool update_rivals) {
 	for(auto n : state.world.in_nation) {
 		if(state.world.nation_get_owned_province_count(n) == 0) {
 			state.world.nation_set_ai_is_threatened(n, false);
-			state.world.nation_set_ai_rival(n, dcon::nation_id{});
+			if(update_rivals) {
+				state.world.nation_set_ai_rival(n, dcon::nation_id{});
+			}
 			continue;
 		}
 
@@ -77,6 +79,10 @@ void update_ai_general_status(sys::state& state) {
 
 		bool threatened = defensive_str < safety_factor * greatest_neighbor;
 		state.world.nation_set_ai_is_threatened(n, threatened);
+
+		if(!update_rivals) {
+			continue;
+		}
 
 		if(!n.get_ai_rival()) {
 			float best_str = 0.0f;
