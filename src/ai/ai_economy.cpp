@@ -89,7 +89,7 @@ void update_factory_types_priority(sys::state& state) {
 				!state.world.nation_get_active_building(n, factory_type_id)
 				&& !state.world.factory_type_get_is_available_from_start(factory_type_id)
 			) {
-				state.world.nation_set_factory_type_experience_priority_private(n, factory_type_id, 0.f);
+				state.world.nation_set_factory_type_experience_priority_national(n, factory_type_id, 0.f);
 				return;
 			}
 
@@ -832,13 +832,10 @@ void update_budget_for_nation(sys::state& state, dcon::nation_id nid, bool presi
 	if(n.get_is_player_controlled() || n.get_owned_province_count() == 0)
 		return;
 
-	// current stockpiles roughly correspond to current income
-	// and calculation of actual prediction is insanely expensive
-	float base_income = n.get_treasury();
+	// Use max(treasury, last_base_budget): update_budget runs AFTER daily_update spent treasury down toward 0!
+	float base_income = std::max(0.0f, std::max(n.get_treasury(), n.get_last_base_budget()));
 
-	// Compute average army strength & count understrength regiments (including newly converted/re-equipping regiments!)
-	// Note: full-strength regiments consume 0 reinforcement goods, so keeping reinforcement consumption high while any
-	// regiment is re-equipping costs almost nothing and prevents converted units from crawling at 20% speed!
+	// Compute average army & navy strength + count understrength regiments/ships (including newly converted/upgraded units!)
 	float total_reg_str = 0.0f;
 	int32_t total_regs = 0;
 	int32_t understrength_regs = 0;
@@ -854,15 +851,26 @@ void update_budget_for_nation(sys::state& state, dcon::nation_id nid, bool presi
 	}
 	bool needs_postwar_reinforce = (total_regs > 0) && ((total_reg_str / float(total_regs) < 0.95f) || understrength_regs > 0);
 
-	bool has_navy = (n.get_navy_control().begin() != n.get_navy_control().end());
+	int32_t total_ships = 0;
+	int32_t understrength_ships = 0;
+	for(auto nv : n.get_navy_control()) {
+		for(auto s : nv.get_navy().get_navy_membership()) {
+			++total_ships;
+			if(s.get_ship().get_strength() < 0.90f) {
+				++understrength_ships;
+			}
+		}
+	}
+	bool has_navy = (total_ships > 0);
+	bool needs_naval_repair = (understrength_ships > 0);
 	auto mode = presim ? war_economy_mode::peacetime : evaluate_war_economy_mode(state, nid);
 
 	float land_budget_ratio = 0.12f;
-	float sea_budget_ratio = has_navy ? 0.05f : 0.0f;
+	float sea_budget_ratio = has_navy ? (needs_naval_repair ? 0.12f : 0.05f) : 0.0f;
 	float land_supply_consumption = 0.15f;
 	float land_reinf_consumption = needs_postwar_reinforce ? 0.85f : 0.20f;
 	float naval_supply_consumption = has_navy ? 0.15f : 0.0f;
-	float naval_reinf_consumption = has_navy ? 0.20f : 0.0f;
+	float naval_reinf_consumption = has_navy ? (needs_naval_repair ? 0.85f : 0.20f) : 0.0f;
 
 	float education_budget_ratio = 0.15f;
 	float investments_budget_ratio = 0.15f;
@@ -879,14 +887,15 @@ void update_budget_for_nation(sys::state& state, dcon::nation_id nid, bool presi
 		land_budget_ratio = 0.30f;
 		sea_budget_ratio = has_navy ? 0.30f : 0.0f;
 	} else if(mode == war_economy_mode::major_war) {
-		land_budget_ratio = 0.60f;
-		sea_budget_ratio = has_navy ? 0.20f : 0.0f;
-		education_budget_ratio = 0.08f;
-		investments_budget_ratio = 0.05f;
-		construction_budget_ratio = 0.10f;
-		soldiers_budget_ratio = 0.20f;
+		// Keep relative budget priorities calibrated so AI (which cannot borrow!) doesn't trigger uniform spending_scale cuts onto army supply
+		land_budget_ratio = 0.50f;
+		sea_budget_ratio = has_navy ? 0.14f : 0.0f;
+		education_budget_ratio = 0.06f;
+		investments_budget_ratio = 0.03f;
+		construction_budget_ratio = 0.08f;
+		soldiers_budget_ratio = 0.16f;
 		overseas_maintenance_budget_ratio = 0.02f;
-		stockpile_budget_ratio = 0.05f;
+		stockpile_budget_ratio = 0.04f;
 
 		land_supply_consumption = 1.0f;
 		land_reinf_consumption = 1.0f;
@@ -918,23 +927,23 @@ void update_budget_for_nation(sys::state& state, dcon::nation_id nid, bool presi
 		land_supply_consumption = 1.0f;
 		land_reinf_consumption = 1.0f;
 		naval_supply_consumption = has_navy ? 0.60f : 0.0f;
-		naval_reinf_consumption = has_navy ? 0.60f : 0.0f;
+		naval_reinf_consumption = has_navy ? (needs_naval_repair ? 0.85f : 0.60f) : 0.0f;
+	} else if(future_rebels_in_nation(state, n) > 0) {
+		land_budget_ratio = needs_postwar_reinforce ? 0.30f : 0.22f;
+		stockpile_budget_ratio = n.get_ai_is_threatened() ? 0.12f : 0.08f;
+
+		land_supply_consumption = 0.55f;
+		land_reinf_consumption = needs_postwar_reinforce ? 0.90f : 0.50f;
 	} else if(n.get_ai_is_threatened()) {
 		land_budget_ratio = needs_postwar_reinforce ? 0.28f : 0.18f;
-		sea_budget_ratio = has_navy ? 0.08f : 0.0f;
+		sea_budget_ratio = has_navy ? (needs_naval_repair ? 0.12f : 0.08f) : 0.0f;
 		overseas_maintenance_budget_ratio = 0.075f;
 		stockpile_budget_ratio = 0.14f;
 
 		land_supply_consumption = 0.35f;
 		land_reinf_consumption = needs_postwar_reinforce ? 0.90f : 0.40f;
 		naval_supply_consumption = has_navy ? 0.25f : 0.0f;
-		naval_reinf_consumption = has_navy ? 0.25f : 0.0f;
-	} else if(future_rebels_in_nation(state, n) > 0) {
-		land_budget_ratio = needs_postwar_reinforce ? 0.28f : 0.20f;
-		stockpile_budget_ratio = 0.08f;
-
-		land_supply_consumption = 0.45f;
-		land_reinf_consumption = needs_postwar_reinforce ? 0.90f : 0.45f;
+		naval_reinf_consumption = has_navy ? (needs_naval_repair ? 0.85f : 0.25f) : 0.0f;
 	} else {
 		if(needs_postwar_reinforce) {
 			land_budget_ratio = 0.25f;
@@ -983,10 +992,10 @@ void update_budget_for_nation(sys::state& state, dcon::nation_id nid, bool presi
 		n.set_domestic_investment_spending(int8_t(0));
 	}
 
-	float soldiers_max_ratio = 100.f * math::sqrt(soldiers_budget / max_soldiers_budget);
+	float soldiers_max_ratio = 100.f * math::sqrt(std::max(0.f, soldiers_budget) / max_soldiers_budget);
 	soldiers_max_ratio = std::clamp(soldiers_max_ratio, 0.f, 100.f);
 
-	float overseas_max_ratio = std::clamp(100.f * overseas_budget / max_overseas_budget, 0.f, 100.f);
+	float overseas_max_ratio = std::clamp(100.f * std::max(0.f, overseas_budget) / max_overseas_budget, 0.f, 100.f);
 
 	n.set_tariffs_import(int8_t(10));
 	n.set_tariffs_export(int8_t(10));
@@ -1066,7 +1075,8 @@ void update_budget_for_nation(sys::state& state, dcon::nation_id nid, bool presi
 	}
 
 	if(mode == war_economy_mode::major_war) {
-		n.set_military_spending(int8_t(std::max(int8_t(75), std::min(int8_t(soldiers_max_ratio), n.get_military_spending()))));
+		int8_t war_mil_floor = int8_t(std::min(75, int32_t(soldiers_max_ratio)));
+		n.set_military_spending(int8_t(std::max(war_mil_floor, std::min(int8_t(soldiers_max_ratio), n.get_military_spending()))));
 	} else {
 		n.set_military_spending(int8_t(std::min(int8_t(soldiers_max_ratio), n.get_military_spending())));
 	}

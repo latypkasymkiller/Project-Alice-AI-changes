@@ -34,8 +34,8 @@ void update_ai_campaign_strategy(sys::state& state) {
 				neighbours++;
 			}
 
-			if(core_provinces_sea_access / core_provinces_owned > 0.5f && total_provinces_owned / neighbours >= 3.f) {
-				auto tagname = text::produce_simple_string(state, nation.get_identity_from_identity_holder().get_name());
+			if(core_provinces_owned > 0.f && (core_provinces_sea_access / core_provinces_owned) > 0.5f
+				&& (neighbours <= 0.f || (total_provinces_owned / neighbours) >= 3.f)) {
 				nation.set_ai_strategy(ai_strategies::naval);
 			}
 			// If AI is a GP or has a lot of neighbours - it follows military strategy
@@ -84,6 +84,8 @@ void update_ai_general_status(sys::state& state, bool update_rivals) {
 			continue;
 		}
 
+		auto self_ol = n.get_overlord_as_subject().get_ruler();
+		auto self_sphere = n.get_in_sphere_of();
 		if(!n.get_ai_rival()) {
 			float best_str = 0.0f;
 			dcon::nation_id potential;
@@ -91,6 +93,8 @@ void update_ai_general_status(sys::state& state, bool update_rivals) {
 				auto other = adj.get_connected_nations(0) != n ? adj.get_connected_nations(0) : adj.get_connected_nations(1);
 				auto ol = other.get_overlord_as_subject().get_ruler();
 				if(!ol
+					&& other != self_ol
+					&& other != self_sphere
 					&& other.get_in_sphere_of() != n
 					&& (!threatened || !nations::are_allied(state, n, other))
 					&& !military::are_on_same_side_in_common_war(state, n, other)) {
@@ -116,9 +120,10 @@ void update_ai_general_status(sys::state& state, bool update_rivals) {
 				}
 			}
 		} else {
-			auto rival_str = estimate_strength(state, n.get_ai_rival());
-			auto ol = n.get_ai_rival().get_overlord_as_subject().get_ruler();
-			if(ol || n.get_ai_rival().get_in_sphere_of() == n || rival_str * 2 < self_str || self_str * 2 < rival_str) {
+			auto cur_rival = n.get_ai_rival();
+			auto rival_str = estimate_strength(state, cur_rival);
+			auto ol = cur_rival.get_overlord_as_subject().get_ruler();
+			if(ol || cur_rival == self_ol || cur_rival == self_sphere || cur_rival.get_in_sphere_of() == n || rival_str * 2 < self_str || self_str * 2 < rival_str) {
 				n.set_ai_rival(dcon::nation_id{});
 			}
 		}

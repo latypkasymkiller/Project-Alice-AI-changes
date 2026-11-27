@@ -2896,7 +2896,7 @@ void add_to_war(sys::state& state, dcon::war_id w, dcon::nation_id n, bool as_at
 	}
 
 	for(auto dep : state.world.nation_get_overlord_as_ruler(n)) {
-		add_to_war(state, w, dep.get_subject(), as_attacker);
+		add_to_war(state, w, dep.get_subject(), as_attacker, on_war_creation);
 	}
 
 	if(!as_attacker && state.world.nation_get_rank(state.world.war_get_primary_defender(w)) > state.world.nation_get_rank(n)) {
@@ -3342,8 +3342,13 @@ void add_wargoal(sys::state& state, dcon::war_id wfor, dcon::nation_id added_by,
 }
 
 void remove_from_war(sys::state& state, dcon::war_id w, dcon::nation_id n, bool as_loss, bool notify_ai) {
+	std::vector<dcon::nation_id> removed_subjects;
 	for(auto vas : state.world.nation_get_overlord_as_ruler(n)) {
-		remove_from_war(state, w, vas.get_subject(), as_loss, notify_ai);
+		auto subj = vas.get_subject().id;
+		remove_from_war(state, w, subj, as_loss, false);
+		if(notify_ai) {
+			removed_subjects.push_back(subj);
+		}
 	}
 
 	dcon::war_participant_id par;
@@ -3466,6 +3471,9 @@ void remove_from_war(sys::state& state, dcon::war_id w, dcon::nation_id n, bool 
 	}
 	if(notify_ai && !state.cheat_data.disable_ai) {
 		ai::on_war_state_changed(state, n);
+		for(auto subj : removed_subjects) {
+			ai::on_war_state_changed(state, subj);
+		}
 		for(auto war_par : state.world.war_get_war_participant(w)) {
 			ai::on_war_state_changed(state, war_par.get_nation());
 		}
