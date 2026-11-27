@@ -620,8 +620,8 @@ void build_ships(sys::state& state) {
 		if(best_transport) {
 			auto overseas_allowed = state.military_definitions.unit_base_definitions[best_transport].can_build_overseas;
 			auto level_req = state.military_definitions.unit_base_definitions[best_transport].min_port_level;
-			auto supply_pts = std::max(1, state.military_definitions.unit_base_definitions[best_transport].supply_consumption_score);
-			int32_t max_base_transport_pts = std::max(supply_pts * 2, target_naval_supply_points / 2);
+			int32_t supply_pts = std::max(1, int32_t(state.military_definitions.unit_base_definitions[best_transport].supply_consumption_score));
+			int32_t max_base_transport_pts = std::max(supply_pts * 2, int32_t(target_naval_supply_points * 0.5f));
 
 			for(uint32_t j = 0; j < owned_ports.size() && ongoing_naval_builds < max_concurrent_naval; ++j) {
 				if(is_port_busy(owned_ports[j]))
@@ -629,7 +629,7 @@ void build_ships(sys::state& state) {
 				int32_t next_t_pts = fleet_cap_in_transports + constructing_fleet_cap + supply_pts;
 				bool need_transports = (num_transports < desired_transports)
 					&& ((num_transports < 10 && next_t_pts <= max_base_transport_pts)
-						|| next_t_pts * 3 <= target_naval_supply_points);
+						|| float(next_t_pts * 3) <= target_naval_supply_points);
 				if(!need_transports)
 					break;
 				if((overseas_allowed || !province::is_overseas(state, owned_ports[j]))
@@ -697,7 +697,7 @@ dcon::province_id get_home_port(sys::state& state, dcon::nation_id n) {
 	float current_distance = 1.0f;
 	for(auto p : state.world.nation_get_province_ownership(n)) {
 		if(p.get_province().get_is_coast() && p.get_province().get_nation_from_province_control() == n) {
-			auto lvl = p.get_province().get_building_level(uint8_t(economy::province_building_type::naval_base));
+			int32_t lvl = int32_t(p.get_province().get_building_level(uint8_t(economy::province_building_type::naval_base)));
 			float pdist = cap ? province::sorting_distance(state, cap, p.get_province()) : 0.0f;
 			if(lvl > max_level) {
 				max_level = lvl;
@@ -788,7 +788,7 @@ void send_fleet_home(sys::state& state, dcon::navy_id n, fleet_activity moving_s
 	auto v = fatten(state.world, n);
 	auto owner = v.get_controller_from_navy_control().id;
 	auto loc = v.get_location_from_navy_location().id;
-	auto home_port = owner ? state.world.nation_get_ai_home_port(owner) : dcon::province_id{};
+	dcon::province_id home_port = owner ? state.world.nation_get_ai_home_port(owner).id : dcon::province_id{};
 	bool carrying = (v.get_army_transport().begin() != v.get_army_transport().end());
 
 	if(loc == home_port && home_port) {
@@ -806,12 +806,14 @@ void send_fleet_home(sys::state& state, dcon::navy_id n, fleet_activity moving_s
 			}
 			// Home port is unreachable (e.g. closed strait or lost): route to ANY sea-reachable friendly port to rescue embarked armies!
 			dcon::province_id rescue_port;
-			for(auto po : state.world.nation_get_province_ownership(owner)) {
-				auto p = po.get_province();
-				if(p.get_is_coast() && p.get_nation_from_province_control() == owner && p.id != loc) {
-					if(military::move_navy_ai(state, n, p.id)) {
-						rescue_port = p.id;
-						break;
+			if(owner) {
+				for(auto po : state.world.nation_get_province_ownership(owner)) {
+					auto p = po.get_province();
+					if(p.get_is_coast() && p.get_nation_from_province_control() == owner && p.id != loc) {
+						if(military::move_navy_ai(state, n, p.id)) {
+							rescue_port = p.id;
+							break;
+						}
 					}
 				}
 			}
