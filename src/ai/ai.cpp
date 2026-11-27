@@ -1593,6 +1593,101 @@ inline float adjacent_enemy_regs_excluding(sys::state const& state, dcon::nation
 	return total;
 }
 
+// Verifies that a land path respects Project Alice's 1-province front logistics rule (logistics.cpp:800-832):
+// - Every intermediate province (path[1 .. size-1]) MUST be safe friendly/allied controlled land!
+// - If allow_hostile_final_step == false, path[0] (destination) must ALSO be safe friendly/allied controlled land.
+// Note: province::make_*_path stores provinces in REVERSE order (path[0] = final destination, path.back() = next step from start).
+inline bool path_respects_front_supply(sys::state& state, dcon::nation_id n, std::vector<dcon::province_id> const& path, bool allow_hostile_final_step) {
+	if(path.empty())
+		return false;
+	size_t const start_idx = allow_hostile_final_step ? 1 : 0;
+	for(size_t i = start_idx; i < path.size(); ++i) {
+		auto p = path[i];
+		if(!p || province::is_sea(state, p) || !province::has_safe_access_to_province(state, n, p)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// Finds a land path from start -> end that NEVER marches through enemy- or rebel-occupied territory!
+// - allow_hostile_final_step == false (guards / staging approach): stays 100% on friendly/allied controlled land
+//   (allows friendly tiles with siege_progress > 0 via fallback check, but ZERO enemy/rebel-controlled tiles).
+// - allow_hostile_final_step == true (frontline attacks / battle reinforcements):
+//   if directly adjacent via a passable border, crosses straight in 1 hop; otherwise approaches strictly over
+//   safe friendly/allied land and takes at most 1 final step into `end`.
+inline std::vector<dcon::province_id> make_front_safe_land_path(sys::state& state, dcon::province_id start, dcon::province_id end, dcon::nation_id n, dcon::army_id army, bool allow_hostile_final_step) {
+	if(!start || !end || start == end || province::is_sea(state, end))
+		return {};
+
+	if(!allow_hostile_final_step) {
+		auto spath = province::make_safe_land_path(state, start, end, n);
+		if(!spath.empty())
+			return spath;
+		auto lpath = province::make_land_unit_path(state, start, end, n, army);
+		if(path_respects_front_supply(state, n, lpath, false))
+			return lpath;
+		return {};
+	}
+
+	// Direct 1-hop border step (never detour through hostile rear when directly adjacent!)
+	if(!province::is_sea(state, start)) {
+		if(auto adj = state.world.get_province_adjacency_by_province_pair(start, end); adj && !province::is_adjacency_impassable(state, n, adj)) {
+			if(province::has_access_to_province(state, n, end)) {
+				return std::vector<dcon::province_id>{ end };
+			}
+		}
+	}
+
+	auto lpath = province::make_land_unit_path(state, start, end, n, army);
+	if(path_respects_front_supply(state, n, lpath, true)) {
+		return lpath;
+	}
+
+	// If make_land_unit_path tried to cut through an enemy-occupied tile, route cleanly over safe friendly land
+	// to the best adjacent supplied/safe staging neighbor of `end`, then take 1 final step into `end`!
+	if(!province::has_access_to_province(state, n, end))
+		return {};
+
+	struct safe_nb_cand {
+		dcon::province_id p;
+		bool has_tp;
+		float km;
+	};
+	std::vector<safe_nb_cand> safe_nbs;
+	for(auto padj : state.world.province_get_province_adjacency(end)) {
+		if(province::is_adjacency_impassable(state, n, padj.id))
+			continue;
+		dcon::province_id nb = padj.get_connected_provinces(0) == end ? padj.get_connected_provinces(1).id : padj.get_connected_provinces(0).id;
+		if(!nb || nb == start || province::is_sea(state, nb) || !province::has_safe_access_to_province(state, n, nb))
+			continue;
+		bool has_tp = (logistics::calculate_supply_throughput_in_province(state, nb, n) > 0.0f);
+		float km = province::direct_distance_km(state, start, nb);
+		safe_nbs.push_back(safe_nb_cand{ nb, has_tp, km });
+	}
+	std::sort(safe_nbs.begin(), safe_nbs.end(), [](safe_nb_cand const& a, safe_nb_cand const& b) {
+		if(a.has_tp != b.has_tp)
+			return a.has_tp > b.has_tp;
+		if(a.km != b.km)
+			return a.km < b.km;
+		return a.p.index() < b.p.index();
+	});
+	for(auto const& cand_nb : safe_nbs) {
+		auto approach = province::make_safe_land_path(state, start, cand_nb.p, n);
+		if(approach.empty()) {
+			auto alt = province::make_land_unit_path(state, start, cand_nb.p, n, army);
+			if(path_respects_front_supply(state, n, alt, false)) {
+				approach = std::move(alt);
+			}
+		}
+		if(!approach.empty() && std::find(approach.begin(), approach.end(), end) == approach.end()) {
+			approach.insert(approach.begin(), end);
+			return approach;
+		}
+	}
+	return {};
+}
+
 struct walkable_theater_map {
 	int32_t land_count = 0;
 	std::vector<uint16_t> theater_id;      // Passable across own + allies + war enemies (bridges national borders for attacks/targets)
@@ -3953,17 +4048,67 @@ void move_idle_guards_impl(sys::state& state, bool only_at_war) {
 	std::vector<dcon::army_id> require_transport;
 
 	auto process_army = [&](dcon::army_fat_id ar) {
-		if(ar.get_ai_activity() == uint8_t(army_activity::on_guard)
-			&& ar.get_ai_province()
-			&& ar.get_ai_province() != ar.get_location_from_army_location()
-			&& ar.get_controller_from_army_control()
-			&& unit_on_ai_control(state, ar)
-			&& !ar.get_arrival_time()
-			&& !ar.get_battle_from_army_battle_participation()
-			&& !ar.get_navy_from_army_transport()) {
+		if(ar.get_ai_activity() != uint8_t(army_activity::on_guard)
+			|| !ar.get_controller_from_army_control()
+			|| !unit_on_ai_control(state, ar)
+			|| ar.get_battle_from_army_battle_participation()
+			|| ar.get_navy_from_army_transport()
+			|| ar.get_is_retreating()) {
+			return;
+		}
 
-			auto ctrl = ar.get_controller_from_army_control();
-			auto valid_path = military::move_army_ai(state, ar.id, ar.get_ai_province(), ctrl);
+		auto ctrl = ar.get_controller_from_army_control();
+		auto loc = ar.get_location_from_army_location().id;
+
+		// If a moving wartime on_guard army's path now crosses a newly enemy-occupied tile, halt it immediately
+		// so it NEVER cuts through enemy territory (still allows final-step battle reinforcements into active battles!).
+		if(ar.get_arrival_time()) {
+			if(ctrl.get_is_at_war() && !ar.get_black_flag() && loc && !province::is_sea(state, loc)
+				&& province::has_safe_access_to_province(state, ctrl, loc)) {
+				auto cur_path = ar.get_path();
+				if(cur_path.size() > 0) {
+					auto path_dest = cur_path.at(0);
+					bool dest_is_battle = path_dest
+						&& (state.world.province_get_land_battle_location(path_dest).begin() != state.world.province_get_land_battle_location(path_dest).end());
+					uint32_t const start_k = dest_is_battle ? 1u : 0u;
+					bool crosses_hostile = false;
+					for(uint32_t k = start_k; k < cur_path.size(); ++k) {
+						auto step_p = cur_path.at(k);
+						if(!step_p || province::is_sea(state, step_p) || !province::has_safe_access_to_province(state, ctrl, step_p)) {
+							crosses_hostile = true;
+							break;
+						}
+					}
+					if(crosses_hostile) {
+						military::stop_army_movement(state, ar.id);
+					} else {
+						return;
+					}
+				} else {
+					return;
+				}
+			} else {
+				return;
+			}
+		}
+
+		auto dest = ar.get_ai_province().id;
+		if(dest && dest != loc) {
+			bool valid_path = false;
+			if(ctrl.get_is_at_war() && !ar.get_black_flag() && province::has_safe_access_to_province(state, ctrl, dest)) {
+				if(!ctrl.get_is_player_controlled()) {
+					state.world.army_set_special_order(ar.id, uint8_t(military::special_army_order::none));
+				}
+				auto spath = ai_front_helpers::make_front_safe_land_path(state, loc, dest, ctrl, ar.id, false);
+				if(!spath.empty()) {
+					valid_path = military::set_army_path(state, ar.id, spath, ctrl);
+				} else if(loc && !province::is_sea(state, loc) && !province::has_safe_access_to_province(state, ctrl, loc)) {
+					// Army is itself stranded on hostile/occupied ground trying to withdraw back to safe territory
+					valid_path = military::move_army_ai(state, ar.id, dest, ctrl);
+				}
+			} else {
+				valid_path = military::move_army_ai(state, ar.id, dest, ctrl);
+			}
 
 			if(!valid_path) {
 				// Units delegated to the AI won't transport themselves on their own
@@ -3974,7 +4119,7 @@ void move_idle_guards_impl(sys::state& state, bool only_at_war) {
 				&& ar.get_path().size() >= 6
 				&& state.world.province_get_building_level(ar.get_location_from_army_location(), uint8_t(economy::province_building_type::railroad)) > 0
 				&& !ai_front_helpers::is_province_near_hostiles(state, ctrl, ar.get_location_from_army_location(), 2)
-				&& !ai_front_helpers::is_province_near_hostiles(state, ctrl, ar.get_ai_province(), 2)) {
+				&& !ai_front_helpers::is_province_near_hostiles(state, ctrl, dest, 2)) {
 				// Safe deep-rear strategic redeployment on railroads (drops org to 10% while moving, so strictly forbidden near hostiles!)
 				ar.set_special_order(uint8_t(military::special_army_order::strategic_redeployment));
 			}
@@ -4543,8 +4688,11 @@ void gather_to_battle(sys::state& state, dcon::nation_id n, dcon::province_id p)
 			break;
 		if(!pin_tracker.can_pull(state, n, c.loc, c.regs, c.dig_in, c.is_core, p, continuous_front))
 			continue;
+		auto bpath = ai_front_helpers::make_front_safe_land_path(state, c.loc, p, n, c.id, true);
+		if(bpath.empty())
+			continue;
 		state.world.army_set_special_order(c.id, uint8_t(military::special_army_order::none));
-		if(military::move_army_ai(state, c.id, p, n, true)) {
+		if(military::set_army_path(state, c.id, bpath, n, true)) {
 			auto prev_act = army_activity(state.world.army_get_ai_activity(c.id));
 			if(prev_act == army_activity::attacking || prev_act == army_activity::attack_gathered) {
 				state.world.army_set_ai_activity(c.id, uint8_t(army_activity::on_guard));
@@ -5405,7 +5553,16 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 	std::vector<uint8_t> is_our_wargoal(size_t(land_count), 0);
 	std::vector<uint8_t> is_enemy_held_wargoal(size_t(land_count), 0);
 	std::vector<uint8_t> seen_target(size_t(land_count), 0);
+	std::vector<dcon::province_id> wargoal_goals;
 	std::vector<dcon::province_id> strategic_goals;
+
+	auto add_wargoal_anchor = [&](dcon::province_id gp) {
+		if(!gp || gp.index() >= land_count)
+			return;
+		if(std::find(wargoal_goals.begin(), wargoal_goals.end(), gp) == wargoal_goals.end()) {
+			wargoal_goals.push_back(gp);
+		}
+	};
 
 	auto add_strategic_goal = [&](dcon::province_id gp) {
 		if(!gp || gp.index() >= land_count)
@@ -5429,12 +5586,12 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 							continue;
 						if(wg_ours) {
 							is_our_wargoal[pid.index()] = 1;
-							add_strategic_goal(pid);
+							add_wargoal_anchor(pid);
 						} else {
 							auto pctrl = m.get_province().get_nation_from_province_control();
 							if((pctrl && military::are_at_war(state, n, pctrl)) || ai_front_helpers::province_has_enemy_army(state, n, pid)) {
 								is_enemy_held_wargoal[pid.index()] = 1;
-								add_strategic_goal(pid);
+								add_wargoal_anchor(pid);
 							}
 						}
 					}
@@ -5443,12 +5600,12 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 					if(tcap && tcap.index() < land_count) {
 						if(wg_ours) {
 							is_our_wargoal[tcap.index()] = 1;
-							add_strategic_goal(tcap);
+							add_wargoal_anchor(tcap);
 						} else {
 							auto pctrl = state.world.province_get_nation_from_province_control(tcap);
 							if((pctrl && military::are_at_war(state, n, pctrl)) || ai_front_helpers::province_has_enemy_army(state, n, tcap)) {
 								is_enemy_held_wargoal[tcap.index()] = 1;
-								add_strategic_goal(tcap);
+								add_wargoal_anchor(tcap);
 							}
 						}
 					}
@@ -5480,6 +5637,7 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		bool is_besieged_home = false;
 		bool is_coastal = false;
 		bool has_same_theater_stack = false;
+		bool stack_already_here = false;
 	};
 	std::vector<army_target> potential_targets;
 
@@ -5496,8 +5654,17 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		uint16_t tid = tmap.theater_of(p);
 		bool same_theater = has_stack_in_theater(tid);
 		bool coastal = state.world.province_get_is_coast(p);
+		bool stack_here = false;
+		for(auto const& rs : ready_stacks) {
+			if(rs.loc == p) {
+				stack_here = true;
+				break;
+			}
+		}
 
-		// Respect Project Alice's 1-province logistics rule: check if p borders supplied friendly/allied territory
+		// Respect Project Alice's 1-province logistics rule (logistics.cpp:800-832):
+		// Applies EQUALLY to enemy land AND enemy/rebel-occupied own/allied land!
+		// NEVER march across deep occupied rear to a distant wargoal (e.g. marching through occupied Macedonia to Thessaly)!
 		bool adj_friendly = false;
 		for(auto padj : state.world.province_get_province_adjacency(p)) {
 			if(province::is_adjacency_impassable(state, n, padj.id))
@@ -5512,9 +5679,10 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		}
 
 		// Filter unreachable targets early:
-		// Land advance requires same walkable theater (USA<->Canada, RUS<->Krakow/Austria!) + depth-1 supply corridor (or liberation).
-		// Overseas naval invasion requires coastal province when no land route exists.
-		bool land_viable = same_theater && (adj_friendly || liberation);
+		// Land advance MUST advance the front tile-by-tile from supplied friendly territory (`adj_friendly`),
+		// or liberate a province a ready stack is already standing on (`stack_here`).
+		// Overseas naval invasion requires coastal province when no land corridor exists.
+		bool land_viable = same_theater && (adj_friendly || stack_here);
 		bool naval_viable = coastal && is_at_war && has_naval_adv && free_tcap > 0 && !active_naval_invasion && (!same_theater || !adj_friendly);
 		if(!land_viable && !naval_viable)
 			return;
@@ -5528,7 +5696,8 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 			liberation,
 			besieged_home,
 			coastal,
-			same_theater
+			same_theater,
+			stack_here
 		});
 	};
 
@@ -5613,18 +5782,33 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 			}
 		}
 
-		// Directional pull along depth-1 land corridor toward strategic goals in the same walkable theater
-		if(pt.adjacent_to_friendly && pt.theater_id != 0 && !strategic_goals.empty()) {
-			float best_gdist_km = 1e9f;
-			for(auto gp : strategic_goals) {
-				if(tmap.theater_of(gp) == pt.theater_id) {
-					float gd = province::direct_distance_km(state, p, gp);
-					if(gd < best_gdist_km)
-						best_gdist_km = gd;
+		// Directional pull along depth-1 land corridor toward wargoals (stronger) and enemy capitals in the same walkable theater
+		if(pt.adjacent_to_friendly && pt.theater_id != 0) {
+			if(!wargoal_goals.empty()) {
+				float best_wg_km = 1e9f;
+				for(auto gp : wargoal_goals) {
+					if(tmap.theater_of(gp) == pt.theater_id) {
+						float gd = province::direct_distance_km(state, p, gp);
+						if(gd < best_wg_km)
+							best_wg_km = gd;
+					}
+				}
+				if(best_wg_km < 1e8f) {
+					value += 24.0f / (1.0f + best_wg_km / 220.0f);
 				}
 			}
-			if(best_gdist_km < 1e8f) {
-				value += 14.0f / (1.0f + best_gdist_km / 250.0f);
+			if(!strategic_goals.empty()) {
+				float best_gdist_km = 1e9f;
+				for(auto gp : strategic_goals) {
+					if(tmap.theater_of(gp) == pt.theater_id) {
+						float gd = province::direct_distance_km(state, p, gp);
+						if(gd < best_gdist_km)
+							best_gdist_km = gd;
+					}
+				}
+				if(best_gdist_km < 1e8f) {
+					value += 12.0f / (1.0f + best_gdist_km / 250.0f);
+				}
 			}
 		}
 
@@ -5660,7 +5844,7 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		}
 		if(min_km > 1e8f)
 			min_km = 2000.0f;
-		float est_days = (pt.has_same_theater_stack && (pt.adjacent_to_friendly || pt.is_rebel_or_liberation))
+		float est_days = (pt.has_same_theater_stack && (pt.adjacent_to_friendly || pt.stack_already_here))
 			? std::max(3.0f, min_km / land_km_per_day)
 			: (28.0f + min_km / sea_km_per_day);
 
@@ -5712,7 +5896,7 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 			continue;
 		++evaluated_targets;
 
-		bool use_land = pt.has_same_theater_stack && (pt.adjacent_to_friendly || pt.is_rebel_or_liberation);
+		bool use_land = pt.has_same_theater_stack && (pt.adjacent_to_friendly || pt.stack_already_here);
 		bool use_naval = !use_land && pt.is_coastal && is_at_war && has_naval_adv && free_tcap > 0 && !active_naval_invasion;
 		if(!use_land && !use_naval)
 			continue;
@@ -5824,6 +6008,8 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 			if(use_land) {
 				if(rs.theater_id != pt.theater_id || pt.theater_id == 0)
 					continue;
+				if(!pt.adjacent_to_friendly && pt.stack_already_here && rs.loc != target_p)
+					continue; // Never march distant stacks through hostile rear to join a stack already standing on target_p!
 			} else {
 				// Naval invasion requires a safe coastal port in the stack's SAFE friendly theater (never embark across hostile land!) and stack fitting in available transports
 				bool has_embark_port = (rs.safe_theater_id != 0)
@@ -5909,46 +6095,49 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 		uint16_t staging_safe_tid = 0;
 		military::crossing_type best_crossing = military::crossing_type::sea;
 		if(use_land) {
-			float best_stage_score = -1e9f;
-			dcon::province_id lead_loc = ready_stacks[cands[0].idx].loc;
-			uint16_t lead_safe_tid = ready_stacks[cands[0].idx].safe_theater_id;
-			for(auto padj : state.world.province_get_province_adjacency(target_p)) {
-				if(province::is_adjacency_impassable(state, n, padj.id))
-					continue;
-				dcon::province_id other = padj.get_connected_provinces(0) == target_p ? padj.get_connected_provinces(1).id : padj.get_connected_provinces(0).id;
-				if(other && other.index() < land_count && province::has_safe_access_to_province(state, n, other)) {
-					uint16_t o_stid = tmap.safe_theater_of(other);
-					if(lead_safe_tid != 0 && o_stid != 0 && o_stid != lead_safe_tid) {
-						// Check if ANY candidate stack is actually in o_stid before accepting a staging tile on the far side of enemy territory!
-						bool any_in_ostid = false;
-						for(auto const& c : cands) {
-							if(ready_stacks[c.idx].safe_theater_id == o_stid) {
-								any_in_ostid = true;
-								break;
+			if(pt.adjacent_to_friendly) {
+				float best_stage_score = -1e9f;
+				dcon::province_id lead_loc = ready_stacks[cands[0].idx].loc;
+				for(auto padj : state.world.province_get_province_adjacency(target_p)) {
+					if(province::is_adjacency_impassable(state, n, padj.id))
+						continue;
+					dcon::province_id other = padj.get_connected_provinces(0) == target_p ? padj.get_connected_provinces(1).id : padj.get_connected_provinces(0).id;
+					if(other && other.index() < land_count && province::has_safe_access_to_province(state, n, other)) {
+						uint16_t o_stid = tmap.safe_theater_of(other);
+						if(o_stid != 0) {
+							// Require at least one candidate stack in the SAME safe friendly landmass so armies never walk across hostile rear to stage!
+							bool any_in_ostid = false;
+							for(auto const& c : cands) {
+								if(ready_stacks[c.idx].safe_theater_id == o_stid) {
+									any_in_ostid = true;
+									break;
+								}
 							}
+							if(!any_in_ostid)
+								continue;
 						}
-						if(!any_in_ostid)
-							continue;
-					}
-					float tp = logistics::calculate_supply_throughput_in_province(state, other, n);
-					auto ctype = military::get_crossing_type(state, padj.id);
-					float sc = (ctype == military::crossing_type::none ? 30.0f : (ctype == military::crossing_type::river ? 10.0f : -20.0f));
-					sc += (tp > 0.0f ? 25.0f : -40.0f);
-					sc += float(military::supply_limit_in_province(state, n, other)) * 0.45f;
-					if(other == lead_loc) {
-						sc += 18.0f;
-					} else {
-						sc -= province::direct_distance_km(state, lead_loc, other) * 0.08f;
-					}
-					if(sc > best_stage_score || (sc == best_stage_score && staging_prov && other.index() < staging_prov.index())) {
-						best_stage_score = sc;
-						staging_prov = other;
-						staging_safe_tid = o_stid;
-						best_crossing = ctype;
+						float tp = logistics::calculate_supply_throughput_in_province(state, other, n);
+						auto ctype = military::get_crossing_type(state, padj.id);
+						float sc = (ctype == military::crossing_type::none ? 30.0f : (ctype == military::crossing_type::river ? 10.0f : -20.0f));
+						sc += (tp > 0.0f ? 25.0f : -40.0f);
+						sc += float(military::supply_limit_in_province(state, n, other)) * 0.45f;
+						if(other == lead_loc) {
+							sc += 18.0f;
+						} else {
+							sc -= province::direct_distance_km(state, lead_loc, other) * 0.08f;
+						}
+						if(sc > best_stage_score || (sc == best_stage_score && staging_prov && other.index() < staging_prov.index())) {
+							best_stage_score = sc;
+							staging_prov = other;
+							staging_safe_tid = o_stid;
+							best_crossing = ctype;
+						}
 					}
 				}
+			} else {
+				best_crossing = military::crossing_type::none;
 			}
-			if(!staging_prov && !pt.is_rebel_or_liberation)
+			if(!staging_prov && !pt.stack_already_here)
 				continue;
 		} else {
 			best_crossing = military::crossing_type::sea;
@@ -6194,24 +6383,33 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 				active_naval_invasion = true;
 			}
 		} else {
-			// If ALL chosen stacks are ALREADY directly adjacent to target_p via a passable border, strike simultaneously!
-			// (NEVER bypass staging when !staging_prov caused staging_prov to default to a distant stack location!)
+			// Strict tile-by-tile frontline advance: NEVER route land stacks across enemy/rebel-occupied rear!
+			bool all_already_in_target = !chosen_indices.empty();
 			bool all_already_adj = !chosen_indices.empty();
 			for(auto idx : chosen_indices) {
 				auto loc_i = ready_stacks[idx].loc;
+				if(loc_i != target_p) {
+					all_already_in_target = false;
+				}
 				auto adj_i = state.world.get_province_adjacency_by_province_pair(loc_i, target_p);
 				if(!adj_i || province::is_adjacency_impassable(state, n, adj_i)) {
 					all_already_adj = false;
-					break;
 				}
 			}
-			if(!staging_prov) {
-				staging_prov = ready_stacks[chosen_indices[0]].loc;
-			}
-			if(all_already_adj) {
+			if(all_already_in_target) {
 				for(auto idx : chosen_indices) {
 					auto& st = ready_stacks[idx];
-					if(auto direct_path = province::make_land_unit_path(state, st.loc, target_p, n, st.id); !direct_path.empty()) {
+					state.world.army_set_special_order(st.id, uint8_t(military::special_army_order::none));
+					state.world.army_set_ai_province(st.id, target_p);
+					state.world.army_set_ai_activity(st.id, uint8_t(army_activity::attack_gathered));
+					st.assigned = true;
+					pin_tracker.commit_pull(st.loc, st.regs, st.is_core);
+					issued_any = true;
+				}
+			} else if(all_already_adj) {
+				for(auto idx : chosen_indices) {
+					auto& st = ready_stacks[idx];
+					if(auto direct_path = ai_front_helpers::make_front_safe_land_path(state, st.loc, target_p, n, st.id, true); !direct_path.empty()) {
 						state.world.army_set_special_order(st.id, uint8_t(military::special_army_order::none));
 						military::set_army_path(state, st.id, direct_path, n);
 						state.world.army_set_ai_province(st.id, target_p);
@@ -6221,29 +6419,7 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 						issued_any = true;
 					}
 				}
-			} else if(chosen_indices.size() == 1) {
-				auto& st = ready_stacks[chosen_indices[0]];
-				if(auto safe_path = province::make_safe_land_path(state, st.loc, staging_prov, n); !safe_path.empty()) {
-					// Approach strictly along safe friendly supply lines to staging_prov first!
-					state.world.army_set_special_order(st.id, uint8_t(military::special_army_order::none));
-					military::set_army_path(state, st.id, safe_path, n);
-					state.world.army_set_ai_province(st.id, target_p);
-					state.world.army_set_ai_activity(st.id, uint8_t(army_activity::attacking));
-					st.assigned = true;
-					pin_tracker.commit_pull(st.loc, st.regs, st.is_core);
-					issued_any = true;
-				} else if(pt.is_rebel_or_liberation) {
-					if(auto lib_path = province::make_land_unit_path(state, st.loc, target_p, n, st.id); !lib_path.empty()) {
-						state.world.army_set_special_order(st.id, uint8_t(military::special_army_order::none));
-						military::set_army_path(state, st.id, lib_path, n);
-						state.world.army_set_ai_province(st.id, target_p);
-						state.world.army_set_ai_activity(st.id, uint8_t(army_activity::attack_gathered));
-						st.assigned = true;
-						pin_tracker.commit_pull(st.loc, st.regs, st.is_core);
-						issued_any = true;
-					}
-				}
-			} else {
+			} else if(staging_prov) {
 				for(auto idx : chosen_indices) {
 					auto& st = ready_stacks[idx];
 					if(st.loc == staging_prov) {
@@ -6252,7 +6428,7 @@ void assign_targets(sys::state& state, dcon::nation_id n) {
 						st.assigned = true;
 						pin_tracker.commit_pull(st.loc, st.regs, st.is_core);
 						issued_any = true;
-					} else if(auto stage_path = province::make_safe_land_path(state, st.loc, staging_prov, n); !stage_path.empty()) {
+					} else if(auto stage_path = ai_front_helpers::make_front_safe_land_path(state, st.loc, staging_prov, n, st.id, false); !stage_path.empty()) {
 						state.world.army_set_special_order(st.id, uint8_t(military::special_army_order::none));
 						military::set_army_path(state, st.id, stage_path, n);
 						state.world.army_set_ai_province(st.id, target_p);
@@ -6387,13 +6563,36 @@ void move_gathered_attackers_impl(sys::state& state, bool only_at_war) {
 							ar.set_ai_activity(uint8_t(army_activity::on_guard));
 							ar.set_ai_province(dcon::province_id{});
 						} else {
-							auto valid_path = military::move_army_ai(state, ar, target_p, ctrl);
+							bool valid_path = false;
+							if(loc && province::is_sea(state, loc)) {
+								valid_path = military::move_army_ai(state, ar, target_p, ctrl);
+							} else if(auto fpath = ai_front_helpers::make_front_safe_land_path(state, loc, target_p, ctrl, ar.id, true); !fpath.empty()) {
+								state.world.army_set_special_order(ar.id, uint8_t(military::special_army_order::none));
+								valid_path = military::set_army_path(state, ar.id, fpath, ctrl);
+							}
 							if(!valid_path) {
 								ar.set_ai_activity(uint8_t(army_activity::on_guard));
 								ar.set_ai_province(dcon::province_id{});
 							}
 						}
 					} else {
+						ar.set_ai_activity(uint8_t(army_activity::on_guard));
+						ar.set_ai_province(dcon::province_id{});
+					}
+				} else if(target_p && ar.get_path().size() >= 2 && !ar.get_black_flag()
+					&& loc && !province::is_sea(state, loc) && province::has_safe_access_to_province(state, ctrl, loc)) {
+					// If an intermediate tile along our march fell to the enemy, halt before marching deep into hostile rear!
+					auto cur_path = ar.get_path();
+					bool crosses_hostile = false;
+					for(uint32_t k = 1; k < cur_path.size(); ++k) {
+						auto step_p = cur_path.at(k);
+						if(!step_p || province::is_sea(state, step_p) || !province::has_safe_access_to_province(state, ctrl, step_p)) {
+							crosses_hostile = true;
+							break;
+						}
+					}
+					if(crosses_hostile) {
+						military::stop_army_movement(state, ar);
 						ar.set_ai_activity(uint8_t(army_activity::on_guard));
 						ar.set_ai_province(dcon::province_id{});
 					}
@@ -6426,6 +6625,31 @@ void move_gathered_attackers_impl(sys::state& state, bool only_at_war) {
 							ar.set_ai_province(dcon::province_id{});
 						}
 					}
+				}
+			}
+		} else if(ar.get_ai_activity() == uint8_t(army_activity::attacking)
+			&& ar.get_arrival_time()
+			&& !ar.get_battle_from_army_battle_participation()
+			&& !ar.get_navy_from_army_transport()
+			&& !ar.get_is_retreating()
+			&& !ar.get_black_flag()) {
+			// While marching to staging_prov, abort immediately if a tile along the staging path fell to enemy occupation!
+			auto ctrl = ar.get_controller_from_army_control().id;
+			auto loc = ar.get_location_from_army_location().id;
+			if(loc && !province::is_sea(state, loc) && province::has_safe_access_to_province(state, ctrl, loc)) {
+				auto cur_path = ar.get_path();
+				bool crosses_hostile = false;
+				for(uint32_t k = 0; k < cur_path.size(); ++k) {
+					auto step_p = cur_path.at(k);
+					if(!step_p || province::is_sea(state, step_p) || !province::has_safe_access_to_province(state, ctrl, step_p)) {
+						crosses_hostile = true;
+						break;
+					}
+				}
+				if(crosses_hostile) {
+					military::stop_army_movement(state, ar);
+					ar.set_ai_activity(uint8_t(army_activity::on_guard));
+					ar.set_ai_province(dcon::province_id{});
 				}
 			}
 		} else if(ar.get_ai_activity() == uint8_t(army_activity::attacking)
@@ -6495,16 +6719,24 @@ void move_gathered_attackers_impl(sys::state& state, bool only_at_war) {
 						for(auto ga : gathered_armies) {
 							state.world.army_set_ai_activity(ga, uint8_t(army_activity::attack_gathered));
 						}
-					} else if(auto path = province::make_land_unit_path(state, loc, target_p, ctrl, ar); path.size() > 0) {
+					} else if(auto path = ai_front_helpers::make_front_safe_land_path(state, loc, target_p, ctrl.id, ar.id, true); path.size() > 0) {
 						for(auto ga : gathered_armies) {
 							state.world.army_set_special_order(ga, uint8_t(military::special_army_order::none));
 							military::set_army_path(state, ga, path, ctrl);
 							state.world.army_set_ai_activity(ga, uint8_t(army_activity::attack_gathered));
 						}
-					} else {
+					} else if(ctrl.get_is_at_war()
+						&& state.world.province_get_is_coast(target_p)
+						&& province::make_land_unit_path(state, loc, target_p, ctrl, ar).empty()) {
 						for(auto ga : gathered_armies) {
 							require_transport.push_back(ga);
 							state.world.army_set_ai_activity(ga, uint8_t(army_activity::attack_transport));
+						}
+					} else {
+						// Front shifted while gathering (target now lies behind enemy-occupied tiles): cancel cleanly so AI re-targets the current 1-tile frontline!
+						for(auto ga : gathered_armies) {
+							state.world.army_set_ai_activity(ga, uint8_t(army_activity::on_guard));
+							state.world.army_set_ai_province(ga, dcon::province_id{});
 						}
 					}
 				} else {
@@ -9470,9 +9702,13 @@ void manage_active_battles(sys::state& state) {
 
 				// Only commit reserves if they actually give us a viable chance (don't trickle-feed into a hopeless slaughter!)
 				if(!to_send.empty() && sim_ratio >= 0.72f) {
+					bool sent_any = false;
 					for(auto const& rc : to_send) {
+						auto bpath = ai_front_helpers::make_front_safe_land_path(state, rc.loc, loc, rc.ctrl, rc.id, true);
+						if(bpath.empty())
+							continue;
 						state.world.army_set_special_order(rc.id, uint8_t(military::special_army_order::none));
-						if(military::move_army_ai(state, rc.id, loc, rc.ctrl, true)) {
+						if(military::set_army_path(state, rc.id, bpath, rc.ctrl, true)) {
 							auto prev_act = army_activity(state.world.army_get_ai_activity(rc.id));
 							if(prev_act == army_activity::attacking || prev_act == army_activity::attack_gathered) {
 								state.world.army_set_ai_activity(rc.id, uint8_t(army_activity::on_guard));
@@ -9481,9 +9717,12 @@ void manage_active_battles(sys::state& state) {
 							get_pin_tracker(rc.ctrl).commit_pull(rc.loc, rc.total_regs, rc.is_core);
 							if(side_is_att) att_with_enroute.push_back(rc.id);
 							else def_with_enroute.push_back(rc.id);
+							sent_any = true;
 						}
 					}
-					return; // Reinforced — stay and fight!
+					if(sent_any) {
+						return; // Reinforced — stay and fight!
+					}
 				}
 			}
 
